@@ -1,0 +1,10 @@
+{
+  "description": "Create and customize interactive web applications effortlessly with intuitive tools designed for developers and non-technical users alike.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
