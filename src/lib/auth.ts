@@ -147,3 +147,37 @@ export async function restoreSession(): Promise<AppUser | null> {
   }
   return getStoredUser()
 }
+
+export function onAuthStateChange(callback: (user: AppUser | null) => void): () => void {
+  if (!isSupabaseConfigured || !supabase) return () => {}
+
+  const {
+    data: { subscription },
+  } = supabase.auth.onAuthStateChange((event, session) => {
+    if (session?.user) {
+      const u = session.user
+      const local = getStoredUser()
+      const user: AppUser = {
+        id: u.id,
+        name:
+          u.user_metadata?.full_name ??
+          u.user_metadata?.name ??
+          local?.name ??
+          u.email?.split('@')[0] ??
+          'Student',
+        email: u.email ?? '',
+        phone: u.user_metadata?.phone ?? local?.phone ?? '+91 98765 43210',
+        rollNo: u.user_metadata?.rollNo ?? local?.rollNo ?? '24CB7821',
+        roomNo: u.user_metadata?.roomNo ?? local?.roomNo ?? 'Hostel 3 - Room 102',
+      }
+      saveStoredUser(user)
+      callback(user)
+    } else if (event === 'SIGNED_OUT') {
+      callback(null)
+    }
+  })
+
+  return () => {
+    subscription.unsubscribe()
+  }
+}

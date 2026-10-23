@@ -6,7 +6,13 @@ import CartPage from './pages/CartPage'
 import TrackPage from './pages/TrackPage'
 import ProfilePage from './pages/ProfilePage'
 import BottomNav from './components/BottomNav'
-import { restoreSession, getStoredUser, signOut, type AppUser } from './lib/auth'
+import {
+  restoreSession,
+  getStoredUser,
+  signOut,
+  onAuthStateChange,
+  type AppUser,
+} from './lib/auth'
 import { isSupabaseConfigured } from './lib/supabase'
 
 export type CartItem = {
@@ -36,12 +42,21 @@ export default function App() {
   const [cart, setCart] = useState<CartItem[]>(loadSavedCart)
   const [loading, setLoading] = useState(true)
 
-  // Restore user session on mount
+  // Restore user session on mount and listen to Google OAuth callbacks
   useEffect(() => {
     restoreSession().then((u) => {
       if (u) setUser(u)
       setLoading(false)
     })
+
+    const unsubscribe = onAuthStateChange((u) => {
+      if (u) setUser(u)
+      setLoading(false)
+    })
+
+    return () => {
+      unsubscribe()
+    }
   }, [])
 
   // Persist cart to localStorage
