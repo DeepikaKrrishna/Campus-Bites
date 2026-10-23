@@ -1,7 +1,8 @@
 import { useState } from "react"
+import { signIn, signUp, signInWithGoogle, type AppUser } from "../lib/auth"
 
 type LoginPageProps = {
-  onLogin: () => void
+  onLogin: (user: AppUser) => void
 }
 
 export default function LoginPage({ onLogin }: LoginPageProps) {
@@ -14,6 +15,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
   const [showPassword, setShowPassword] = useState(false)
   const [remember, setRemember] = useState(true)
   const [error, setError] = useState("")
+  const [submitting, setSubmitting] = useState(false)
 
   const isSignUp = mode === "signup"
 
@@ -22,7 +24,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
     setError("")
   }
 
-  function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
     setError("")
 
@@ -55,15 +57,15 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
         return
       }
 
-      // Account created successfully
-      alert("Account created successfully! Please sign in.")
-
-      // Go back to Sign In
-      setMode("login")
-
-      // Keep email so user doesn't need to type it again
-      setPassword("")
-      setError("")
+      setSubmitting(true)
+      try {
+        const user = await signUp(email, password, name)
+        onLogin(user)
+      } catch (err: any) {
+        setError(err.message || "Failed to create account")
+      } finally {
+        setSubmitting(false)
+      }
 
       return
     }
@@ -91,10 +93,15 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
       return
     }
 
-    // =========================
-    // SUCCESSFUL LOGIN
-    // =========================
-    onLogin()
+    setSubmitting(true)
+    try {
+      const user = await signIn(email, password)
+      onLogin(user)
+    } catch (err: any) {
+      setError(err.message || "Invalid email or password")
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   return (
@@ -556,9 +563,14 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
             {/* GOOGLE */}
             <button
               type="button"
-              onClick={() =>
-                setError("Google sign-in is available in the full application.")
-              }
+              onClick={async () => {
+                try {
+                  const user = await signInWithGoogle()
+                  if (user?.id) onLogin(user)
+                } catch (err: any) {
+                  setError(err.message || "Google sign-in error")
+                }
+              }}
               style={{
                 width: "100%",
                 height: "44px",

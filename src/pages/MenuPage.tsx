@@ -5,12 +5,13 @@ import type { CartItem } from "../App"
 
 type Props = {
   onAddToCart: (item: Omit<CartItem, "quantity">) => void
+  onRemoveFromCart?: (id: number) => void
   cart: CartItem[]
 }
 
 const sorts = ["Most ordered", "Price: Low-High", "Rating"]
 
-export default function MenuPage({ onAddToCart, cart }: Props) {
+export default function MenuPage({ onAddToCart, onRemoveFromCart, cart }: Props) {
   const [activeCategory, setActiveCategory] = useState("All")
   const [vegOnly, setVegOnly] = useState(false)
   const [sortIdx, setSortIdx] = useState(0)
@@ -356,6 +357,7 @@ export default function MenuPage({ onAddToCart, cart }: Props) {
                 item={item}
                 qty={qty(item.id)}
                 onAdd={() => openCustomization(item)}
+                onRemove={() => onRemoveFromCart?.(item.id)}
               />
             ))}
         </div>
@@ -388,6 +390,7 @@ export default function MenuPage({ onAddToCart, cart }: Props) {
             compact
             qty={qty(item.id)}
             onAdd={() => openCustomization(item)}
+            onRemove={() => onRemoveFromCart?.(item.id)}
           />
         ))}
       </div>
