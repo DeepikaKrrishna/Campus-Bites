@@ -565,10 +565,16 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
               type="button"
               onClick={async () => {
                 try {
-                  const user = await signInWithGoogle()
-                  if (user?.id) onLogin(user)
+                  await signInWithGoogle()
+                  // If Supabase is configured, the browser will redirect to Google.
+                  // When it comes back, restoreSession() and onAuthStateChange() handle it.
                 } catch (err: any) {
-                  setError(err.message || "Google sign-in error")
+                  // Demo mode fallback — signInWithGoogle throws { __demoUser }
+                  if (err?.__demoUser) {
+                    onLogin(err.__demoUser)
+                  } else {
+                    setError(err.message || "Google sign-in error")
+                  }
                 }
               }}
               style={{
