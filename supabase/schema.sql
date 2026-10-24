@@ -1,6 +1,7 @@
 -- =========================================================
 -- CampusBites Database Schema
 -- Run this in Supabase SQL Editor (supabase.com → SQL Editor)
+-- Safe to re-run — uses DROP IF EXISTS / ON CONFLICT
 -- =========================================================
 
 -- 1. Menu items (admin can manage via Supabase dashboard)
@@ -55,26 +56,33 @@ alter table orders enable row level security;
 alter table profiles enable row level security;
 
 -- Everyone can read the menu
+drop policy if exists "Menu is public" on menu_items;
 create policy "Menu is public" on menu_items
   for select using (true);
 
 -- Users can only see + create their own orders
+drop policy if exists "Users read own orders" on orders;
 create policy "Users read own orders" on orders
   for select using (auth.uid() = user_id);
 
+drop policy if exists "Users create own orders" on orders;
 create policy "Users create own orders" on orders
   for insert with check (auth.uid() = user_id);
 
+drop policy if exists "Users update own orders" on orders;
 create policy "Users update own orders" on orders
   for update using (auth.uid() = user_id);
 
 -- Profile: users read/write their own row
+drop policy if exists "Users read own profile" on profiles;
 create policy "Users read own profile" on profiles
   for select using (auth.uid() = id);
 
+drop policy if exists "Users upsert own profile" on profiles;
 create policy "Users upsert own profile" on profiles
   for insert with check (auth.uid() = id);
 
+drop policy if exists "Users update own profile" on profiles;
 create policy "Users update own profile" on profiles
   for update using (auth.uid() = id);
 
@@ -90,7 +98,8 @@ begin
     new.id,
     coalesce(new.raw_user_meta_data->>'name', split_part(new.email, '@', 1)),
     new.email
-  );
+  )
+  on conflict (id) do nothing;
   return new;
 end;
 $$;
