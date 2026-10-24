@@ -3,6 +3,7 @@ import { menuItems, type MenuItem } from '../data/menuItems'
 import FoodCard from '../components/FoodCard'
 import type { CartItem, Tab } from '../App'
 import type { AppUser } from '../lib/auth'
+import { APP_ICON } from '../assets/appLogo'
 
 type Props = {
   onAddToCart: (item: Omit<CartItem, 'quantity'>) => void
@@ -95,7 +96,7 @@ export default function HomePage({
         >
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <img
-              src="/app-icon.jpg"
+              src={APP_ICON}
               alt="CampusBites Logo"
               style={{
                 width: 48,

@@ -1,5 +1,6 @@
 import { useState } from "react"
 import { signIn, signUp, signInWithGoogle, type AppUser } from "../lib/auth"
+import { APP_ICON } from "../assets/appLogo"
 
 type LoginPageProps = {
   onLogin: (user: AppUser) => void
@@ -154,7 +155,7 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
               }}
             >
               <img
-                src="/app-icon.jpg"
+                src={APP_ICON}
                 alt="CampusBites Logo"
                 style={{
                   width: "36px",

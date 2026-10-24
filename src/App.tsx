@@ -14,6 +14,7 @@ import {
   type AppUser,
 } from './lib/auth'
 import { isSupabaseConfigured } from './lib/supabase'
+import { APP_ICON } from './assets/appLogo'
 
 export type CartItem = {
   id: number
@@ -113,7 +114,7 @@ export default function App() {
         <div style={{ textAlign: 'center' }}>
           <div style={{ position: 'relative', width: 68, height: 68, margin: '0 auto 16px' }}>
             <img
-              src="/app-icon.jpg"
+              src={APP_ICON}
               alt="CampusBites"
               style={{
                 width: 54,
