@@ -50,7 +50,6 @@ export async function signUp(email: string, password: string, name: string): Pro
 
     if (data?.user) {
       // Supabase may require email confirmation — check identities
-      // If identities array is empty, the user already exists (Supabase returns a fake user)
       if (data.user.identities && data.user.identities.length === 0) {
         throw new Error('An account with this email already exists. Please sign in instead.')
       }
@@ -58,6 +57,18 @@ export async function signUp(email: string, password: string, name: string): Pro
       // If email confirmation is needed, session will be null
       if (!data.session) {
         throw new Error('Account created! Please check your email to confirm your account before signing in.')
+      }
+
+      // Create profile row directly (instead of relying on DB trigger)
+      try {
+        await supabase.from('profiles').upsert({
+          id: data.user.id,
+          name,
+          email,
+        }, { onConflict: 'id' })
+      } catch (e) {
+        // Profile creation is non-critical — don't block sign-up
+        console.warn('Profile upsert note:', e)
       }
 
       const user: AppUser = {
