@@ -111,17 +111,32 @@ export default function App() {
         }}
       >
         <div style={{ textAlign: 'center' }}>
-          <div
-            style={{
-              width: 48,
-              height: 48,
-              borderRadius: '50%',
-              border: '4px solid #e2e8f0',
-              borderTopColor: '#22c55e',
-              animation: 'spin 0.7s linear infinite',
-              margin: '0 auto 16px',
-            }}
-          />
+          <div style={{ position: 'relative', width: 68, height: 68, margin: '0 auto 16px' }}>
+            <img
+              src="/app-icon.jpg"
+              alt="CampusBites"
+              style={{
+                width: 54,
+                height: 54,
+                borderRadius: 16,
+                objectFit: 'cover',
+                boxShadow: '0 8px 24px rgba(34,197,94,0.3)',
+                position: 'absolute',
+                top: 7,
+                left: 7,
+              }}
+            />
+            <div
+              style={{
+                width: 68,
+                height: 68,
+                borderRadius: 20,
+                border: '3px solid #e2e8f0',
+                borderTopColor: '#22c55e',
+                animation: 'spin 0.8s linear infinite',
+              }}
+            />
+          </div>
           <p style={{ color: '#64748b', fontSize: 14, fontWeight: 700 }}>
             Loading CampusBites…
           </p>

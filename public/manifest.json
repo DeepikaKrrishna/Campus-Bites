@@ -1,0 +1,17 @@
+{
+  "name": "CampusBites",
+  "short_name": "CampusBites",
+  "description": "Smart food ordering for campus canteen - skip lines, order ahead.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#16a34a",
+  "icons": [
+    {
+      "src": "/app-icon.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ]
+}

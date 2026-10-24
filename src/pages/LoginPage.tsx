@@ -153,19 +153,18 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
                 gap: "8px",
               }}
             >
-              <div
+              <img
+                src="/app-icon.jpg"
+                alt="CampusBites Logo"
                 style={{
-                  width: "34px",
-                  height: "34px",
+                  width: "36px",
+                  height: "36px",
                   borderRadius: "10px",
-                  background: "rgba(255,255,255,0.18)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
+                  objectFit: "cover",
+                  boxShadow: "0 2px 8px rgba(0,0,0,0.25)",
+                  border: "1.5px solid rgba(255,255,255,0.4)",
                 }}
-              >
-                🛍️
-              </div>
+              />
 
               <span
                 style={{

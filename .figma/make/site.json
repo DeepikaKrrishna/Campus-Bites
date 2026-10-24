@@ -1,5 +1,12 @@
 {
-  "description": "Create and customize interactive web applications effortlessly with intuitive tools designed for developers and non-technical users alike.",
+  "title": "CampusBites",
+  "description": "Smart food ordering for campus canteen - skip lines, order ahead.",
+  "icons": {
+    "icon": "/app-icon.jpg"
+  },
+  "openGraph": {
+    "image": "/app-icon.jpg"
+  },
   "robots": {
     "index": false
   },

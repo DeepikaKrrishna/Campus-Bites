@@ -93,35 +93,50 @@ export default function HomePage({
             justifyContent: 'space-between',
           }}
         >
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-              <span style={{ fontSize: 13 }}>👋</span>
-              <p
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <img
+              src="/app-icon.jpg"
+              alt="CampusBites Logo"
+              style={{
+                width: 48,
+                height: 48,
+                borderRadius: 14,
+                objectFit: 'cover',
+                boxShadow: '0 4px 14px rgba(34,197,94,0.28)',
+                border: '2px solid #ffffff',
+                flexShrink: 0,
+              }}
+            />
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                <span style={{ fontSize: 13 }}>👋</span>
+                <p
+                  style={{
+                    fontSize: 12,
+                    color: '#64748b',
+                    margin: 0,
+                    fontWeight: 600,
+                    letterSpacing: '0.02em',
+                  }}
+                >
+                  Welcome back, {userName}
+                </p>
+              </div>
+
+              <h1
                 style={{
-                  fontSize: 12,
-                  color: '#64748b',
+                  fontSize: 18,
+                  fontWeight: 800,
+                  color: '#0f172a',
                   margin: 0,
-                  fontWeight: 600,
-                  letterSpacing: '0.02em',
+                  lineHeight: 1.25,
                 }}
               >
-                Welcome back
-              </p>
+                What would you
+                <br />
+                like to eat today?
+              </h1>
             </div>
-
-            <h1
-              style={{
-                fontSize: 20,
-                fontWeight: 800,
-                color: '#0f172a',
-                margin: 0,
-                lineHeight: 1.25,
-              }}
-            >
-              {userName}, what would you
-              <br />
-              like to eat today?
-            </h1>
           </div>
 
           {/* User Avatar */}
