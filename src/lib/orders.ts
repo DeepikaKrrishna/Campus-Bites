@@ -1,5 +1,5 @@
 import { supabase, isSupabaseConfigured } from './supabase'
-import type { AppUser } from './auth'
+import { type AppUser, getAuthHeaders } from './auth'
 
 export type OrderStatus =
   | 'PLACED'
@@ -142,7 +142,8 @@ export async function getOrders(userId: string): Promise<Order[]> {
 
   // 2. Try backend API endpoint
   try {
-    const res = await fetch(`/api/orders/user/${encodeURIComponent(effectiveUserId)}`)
+    const headers = await getAuthHeaders()
+    const res = await fetch(`/api/orders/user/${encodeURIComponent(effectiveUserId)}`, { headers })
     if (res.ok) {
       const json = await res.json()
       if (json.success && Array.isArray(json.orders)) {
@@ -167,9 +168,10 @@ export async function placeOrder(
   payment: 'cash' | 'upi' | 'card',
   _meta?: any
 ): Promise<Order> {
+  const headers = await getAuthHeaders()
   const res = await fetch('/api/orders/create', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({
       userId: user.id,
       items: items.map((i) => ({ id: i.id, quantity: i.quantity })),
@@ -197,9 +199,10 @@ export async function placeOrder(
  * Cancel an order
  */
 export async function cancelOrder(orderId: string, reason: string): Promise<Order> {
+  const headers = await getAuthHeaders()
   const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}/status`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({
       newStatus: 'CANCELLED',
       reason,
@@ -230,9 +233,10 @@ export async function rateOrder(
   _tags?: string[]
 ): Promise<void> {
   try {
+    const headers = await getAuthHeaders()
     await fetch(`/api/orders/${encodeURIComponent(orderId)}/rate`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ rating, comment }),
     })
   } catch (e) {

@@ -9,9 +9,20 @@ const supabaseUrl = process.env.VITE_SUPABASE_URL || ''
 const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || ''
 const supabase = createClient(supabaseUrl, supabaseKey)
 
+// Secure test tokens recognized by server in test/development mode
+const STAFF_AUTH_HEADER = {
+  Authorization: 'Bearer test_staff_token_secret_2026',
+}
+
+function getCustomerAuthHeader(customerId: string) {
+  return {
+    Authorization: `Bearer test_customer_token:${customerId}`,
+  }
+}
+
 async function runTests() {
   console.log('======================================================================')
-  console.log('🧪 RUNNING COMPREHENSIVE CAMPUSBITES INTEGRATION TEST SUITE')
+  console.log('🧪 RUNNING CAMPUSBITES SECURITY & INTEGRATION TEST SUITE')
   console.log('======================================================================\n')
 
   let passed = 0
@@ -49,9 +60,11 @@ async function runTests() {
     // 2a. Valid Cart
     const validRes = await fetch(`${BASE_URL}/api/payments/create-order`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...getCustomerAuthHeader('student-001'),
+      },
       body: JSON.stringify({
-        userId: 'test-student-001',
         items: [
           { id: 1, quantity: 2 }, // Hot & Cheesy Omelette @ 70 = 140
           { id: 4, quantity: 1 }, // Filter Coffee @ 25 = 25
@@ -73,7 +86,7 @@ async function runTests() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        userId: 'test-student-001',
+        userId: 'student-001',
         items: [{ id: 9999, quantity: 1 }],
       }),
     })
@@ -86,7 +99,7 @@ async function runTests() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        userId: 'test-student-001',
+        userId: 'student-001',
         items: [{ id: 1, quantity: -5 }],
       }),
     })
@@ -103,9 +116,11 @@ async function runTests() {
   try {
     const cashRes = await fetch(`${BASE_URL}/api/payments/create-order`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...getCustomerAuthHeader('student-cash'),
+      },
       body: JSON.stringify({
-        userId: 'test-student-cash',
         items: [{ id: 2, quantity: 1 }], // Masala Dosa @ 60 + 3 tax + 10 packing = 73
         paymentMethod: 'cash',
       }),
@@ -128,9 +143,11 @@ async function runTests() {
   try {
     const orderRes = await fetch(`${BASE_URL}/api/payments/create-order`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...getCustomerAuthHeader('student-upi'),
+      },
       body: JSON.stringify({
-        userId: 'test-student-upi',
         items: [{ id: 5, quantity: 1 }], // Chicken Biryani @ 160 + 8 + 10 = 178
         paymentMethod: 'upi',
       }),
@@ -174,48 +191,80 @@ async function runTests() {
   }
 
   // -------------------------------------------------------------------------
-  // TEST 5: Order Lifecycle State Machine Progression
+  // TEST 5: Order Lifecycle State Machine Progression & Security Checks
   // -------------------------------------------------------------------------
-  console.log('\n--- TEST 5: Order Lifecycle State Machine Progression ---')
+  console.log('\n--- TEST 5: Order Lifecycle State Machine Progression & Security ---')
   try {
-    const staffPasskey = process.env.STAFF_SECRET_PASSKEY || 'CAMPUS_CHEF_2026'
+    // 5a. Unauthenticated status update must be rejected with HTTP 401
+    const unauthStatusRes = await fetch(`${BASE_URL}/api/orders/${upiOrderId}/status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ newStatus: 'PREPARING' }),
+    })
+    assert(unauthStatusRes.status === 401, 'Unauthenticated status update rejected with HTTP 401')
 
-    // 5a. Test Invalid Transition (Jumping from PLACED to PICKED_UP)
+    // 5b. Header-length spoofing (e.g. random token without Bearer) must be rejected
+    const spoofHeaderRes = await fetch(`${BASE_URL}/api/orders/${upiOrderId}/status`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: 'random_spoofed_header_longer_than_20_chars',
+      },
+      body: JSON.stringify({ newStatus: 'PREPARING' }),
+    })
+    assert(spoofHeaderRes.status === 401, 'Arbitrary long authorization header rejected with HTTP 401')
+
+    // 5c. Customer token trying to advance kitchen stage must be rejected with HTTP 403 Forbidden
+    const customerForbiddenRes = await fetch(`${BASE_URL}/api/orders/${upiOrderId}/status`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getCustomerAuthHeader('student-upi'),
+      },
+      body: JSON.stringify({ newStatus: 'PREPARING' }),
+    })
+    assert(customerForbiddenRes.status === 403, 'Customer token advancing kitchen stage rejected with HTTP 403')
+
+    // 5d. Test Invalid Transition by staff (Jumping from ACCEPTED to PICKED_UP)
     const invalidJumpRes = await fetch(`${BASE_URL}/api/orders/${upiOrderId}/status`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...STAFF_AUTH_HEADER,
+      },
       body: JSON.stringify({
         newStatus: 'PICKED_UP',
-        staffPasskey,
       }),
     })
-    assert(invalidJumpRes.status === 400, 'Illegal jump transition (PLACED -> PICKED_UP) rejected with HTTP 400')
+    assert(invalidJumpRes.status === 400, 'Illegal jump transition (ACCEPTED -> PICKED_UP) rejected with HTTP 400')
 
-    // 5b. Transition 1: PLACED -> ACCEPTED
-    // (Note: Already accepted during payment verification, or let's verify next step)
-    // 5c. Transition 2: ACCEPTED -> PREPARING
+    // 5e. Transition 1: ACCEPTED -> PREPARING (by verified staff)
     const prepRes = await fetch(`${BASE_URL}/api/orders/${upiOrderId}/status`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...STAFF_AUTH_HEADER,
+      },
       body: JSON.stringify({
         newStatus: 'PREPARING',
         note: 'Chef started cooking fresh meal in kitchen',
-        staffPasskey,
       }),
     })
     const prepData = await prepRes.json()
-    assert(prepRes.status === 200, 'Transitioned to PREPARING successfully')
+    assert(prepRes.status === 200, 'Staff transitioned to PREPARING successfully')
     assert(prepData.order.status === 'PREPARING', 'Order status is now PREPARING')
     assert(prepData.order.stage === 2, 'Order stage is 2')
 
-    // 5d. Transition 3: PREPARING -> READY_FOR_PICKUP
+    // 5f. Transition 2: PREPARING -> READY_FOR_PICKUP (by verified staff)
     const readyRes = await fetch(`${BASE_URL}/api/orders/${upiOrderId}/status`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...STAFF_AUTH_HEADER,
+      },
       body: JSON.stringify({
         newStatus: 'READY_FOR_PICKUP',
         note: 'Order packed in eco-box and placed at Counter 2 window',
-        staffPasskey,
       }),
     })
     const readyData = await readyRes.json()
@@ -223,14 +272,16 @@ async function runTests() {
     assert(readyData.order.status === 'READY_FOR_PICKUP', 'Order status is READY_FOR_PICKUP')
     assert(readyData.order.stage === 3, 'Order stage is 3')
 
-    // 5e. Transition 4: READY_FOR_PICKUP -> PICKED_UP
+    // 5g. Transition 3: READY_FOR_PICKUP -> PICKED_UP (by verified staff)
     const completeRes = await fetch(`${BASE_URL}/api/orders/${upiOrderId}/status`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...STAFF_AUTH_HEADER,
+      },
       body: JSON.stringify({
         newStatus: 'PICKED_UP',
         note: 'Token verified and meal handed over to student',
-        staffPasskey,
       }),
     })
     const completeData = await completeRes.json()
@@ -238,13 +289,15 @@ async function runTests() {
     assert(completeData.order.status === 'PICKED_UP', 'Order status is PICKED_UP')
     assert(completeData.order.stage === 4, 'Order stage is 4')
 
-    // 5f. Transition 5: Terminal state cannot transition further
+    // 5h. Terminal state cannot transition further
     const afterTerminalRes = await fetch(`${BASE_URL}/api/orders/${upiOrderId}/status`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...STAFF_AUTH_HEADER,
+      },
       body: JSON.stringify({
         newStatus: 'CANCELLED',
-        staffPasskey,
       }),
     })
     assert(afterTerminalRes.status === 400, 'Cannot transition terminal order (PICKED_UP -> CANCELLED)')
@@ -253,50 +306,116 @@ async function runTests() {
   }
 
   // -------------------------------------------------------------------------
-  // TEST 6: Order Cancellation Flow
+  // TEST 6: Order Cancellation Flow & Access Controls
   // -------------------------------------------------------------------------
-  console.log('\n--- TEST 6: Order Cancellation Flow ---')
+  console.log('\n--- TEST 6: Order Cancellation Flow & Access Controls ---')
   try {
     const cancelTargetRes = await fetch(`${BASE_URL}/api/payments/create-order`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...getCustomerAuthHeader('student-alice'),
+      },
       body: JSON.stringify({
-        userId: 'test-student-cancel',
         items: [{ id: 4, quantity: 1 }],
         paymentMethod: 'cash',
       }),
     })
     const cancelTarget = await cancelTargetRes.json()
 
-    const cancelRes = await fetch(`${BASE_URL}/api/orders/${cancelTarget.orderId}/status`, {
+    // 6a. Stranger cannot cancel Alice's order (HTTP 403)
+    const strangerCancelRes = await fetch(`${BASE_URL}/api/orders/${cancelTarget.orderId}/status`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...getCustomerAuthHeader('student-bob-stranger'),
+      },
       body: JSON.stringify({
         newStatus: 'CANCELLED',
-        reason: 'Student lecture rescheduled',
+        reason: 'Attempting malicious cancel',
       }),
     })
-    const cancelData = await cancelRes.json()
-    assert(cancelRes.status === 200, 'Customer order cancellation succeeded')
+    assert(strangerCancelRes.status === 403, "Stranger cannot cancel another user's order (HTTP 403)")
+
+    // 6b. Legitimate owner (Alice) CAN cancel her own order while PLACED
+    const aliceCancelRes = await fetch(`${BASE_URL}/api/orders/${cancelTarget.orderId}/status`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getCustomerAuthHeader('student-alice'),
+      },
+      body: JSON.stringify({
+        newStatus: 'CANCELLED',
+        reason: 'Lecture rescheduled',
+      }),
+    })
+    const cancelData = await aliceCancelRes.json()
+    assert(aliceCancelRes.status === 200, 'Owner successfully cancelled PLACED order')
     assert(cancelData.order.status === 'CANCELLED', 'Order status is CANCELLED')
-    assert(cancelData.order.cancellation_reason === 'Student lecture rescheduled', 'Cancellation reason saved')
+    assert(cancelData.order.cancellation_reason === 'Lecture rescheduled', 'Cancellation reason saved')
+
+    // 6c. Customer CANNOT cancel after kitchen accepted / prepared order
+    const prepOrderRes = await fetch(`${BASE_URL}/api/payments/create-order`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getCustomerAuthHeader('student-carol'),
+      },
+      body: JSON.stringify({
+        items: [{ id: 1, quantity: 1 }],
+        paymentMethod: 'cash',
+      }),
+    })
+    const prepOrder = await prepOrderRes.json()
+
+    // Staff accepts it
+    await fetch(`${BASE_URL}/api/orders/${prepOrder.orderId}/status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...STAFF_AUTH_HEADER },
+      body: JSON.stringify({ newStatus: 'ACCEPTED' }),
+    })
+
+    // Carol tries to cancel now -> rejected with 403
+    const lateCancelRes = await fetch(`${BASE_URL}/api/orders/${prepOrder.orderId}/status`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...getCustomerAuthHeader('student-carol'),
+      },
+      body: JSON.stringify({ newStatus: 'CANCELLED' }),
+    })
+    assert(lateCancelRes.status === 403, 'Customer cannot cancel order once kitchen has accepted it (HTTP 403)')
   } catch (e: any) {
     assert(false, `Cancellation exception: ${e.message}`)
   }
 
   // -------------------------------------------------------------------------
-  // TEST 7: Staff Cash Collection Endpoint
+  // TEST 7: Staff Cash Collection Access Control
   // -------------------------------------------------------------------------
-  console.log('\n--- TEST 7: Staff Cash Collection ---')
+  console.log('\n--- TEST 7: Staff Cash Collection Access Control ---')
   try {
-    const staffPasskey = process.env.STAFF_SECRET_PASSKEY || 'CAMPUS_CHEF_2026'
-    const collectRes = await fetch(`${BASE_URL}/api/orders/${cashOrderId}/collect-cash`, {
+    // 7a. Customer cannot collect cash (HTTP 403)
+    const customerCollectRes = await fetch(`${BASE_URL}/api/orders/${cashOrderId}/collect-cash`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ staffPasskey }),
+      headers: {
+        'Content-Type': 'application/json',
+        ...getCustomerAuthHeader('student-cash'),
+      },
+      body: JSON.stringify({}),
     })
-    const collectData = await collectRes.json()
-    assert(collectRes.status === 200, 'Cash collection recorded with HTTP 200')
+    assert(customerCollectRes.status === 403, 'Customer rejected from cash collection with HTTP 403')
+
+    // 7b. Verified staff can collect cash (HTTP 200)
+    const staffCollectRes = await fetch(`${BASE_URL}/api/orders/${cashOrderId}/collect-cash`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...STAFF_AUTH_HEADER,
+      },
+      body: JSON.stringify({}),
+    })
+    const collectData = await staffCollectRes.json()
+    assert(staffCollectRes.status === 200, 'Authorized staff collected cash with HTTP 200')
     assert(collectData.order.payment_status === 'PAID', 'Order payment_status updated to PAID')
   } catch (e: any) {
     assert(false, `Cash collection exception: ${e.message}`)
@@ -354,21 +473,71 @@ async function runTests() {
   }
 
   // -------------------------------------------------------------------------
-  // TEST 9: Staff Dashboard Orders & Stats
+  // TEST 9: Staff Dashboard Endpoints Access Control
   // -------------------------------------------------------------------------
-  console.log('\n--- TEST 9: Staff Dashboard Orders & Stats ---')
+  console.log('\n--- TEST 9: Staff Dashboard Endpoints Access Control ---')
   try {
-    const staffOrdersRes = await fetch(`${BASE_URL}/api/staff/orders`)
+    // 9a. Unauthenticated GET /api/staff/orders must return HTTP 401
+    const unauthOrdersRes = await fetch(`${BASE_URL}/api/staff/orders`)
+    assert(unauthOrdersRes.status === 401, 'Unauthenticated staff orders request returns HTTP 401')
+
+    // 9b. Customer token GET /api/staff/orders must return HTTP 403 Forbidden
+    const customerStaffOrdersRes = await fetch(`${BASE_URL}/api/staff/orders`, {
+      headers: getCustomerAuthHeader('student-001'),
+    })
+    assert(customerStaffOrdersRes.status === 403, 'Customer token requesting staff orders returns HTTP 403')
+
+    // 9c. Verified Staff token GET /api/staff/orders must return HTTP 200
+    const staffOrdersRes = await fetch(`${BASE_URL}/api/staff/orders`, {
+      headers: STAFF_AUTH_HEADER,
+    })
     const staffOrdersData = await staffOrdersRes.json()
-    assert(staffOrdersRes.status === 200, 'Staff orders endpoint responds with HTTP 200')
+    assert(staffOrdersRes.status === 200, 'Verified staff token retrieves staff orders with HTTP 200')
     assert(Array.isArray(staffOrdersData.orders), 'Staff orders returns array of persisted orders')
 
-    const statsRes = await fetch(`${BASE_URL}/api/staff/stats`)
+    // 9d. Unauthenticated GET /api/staff/stats must return HTTP 401
+    const unauthStatsRes = await fetch(`${BASE_URL}/api/staff/stats`)
+    assert(unauthStatsRes.status === 401, 'Unauthenticated stats request returns HTTP 401')
+
+    // 9e. Verified Staff token GET /api/staff/stats must return HTTP 200
+    const statsRes = await fetch(`${BASE_URL}/api/staff/stats`, {
+      headers: STAFF_AUTH_HEADER,
+    })
     const statsData = await statsRes.json()
-    assert(statsRes.status === 200, 'Staff stats endpoint responds with HTTP 200')
+    assert(statsRes.status === 200, 'Staff stats endpoint responds with HTTP 200 for staff token')
     assert(typeof statsData.stats.pickedUp === 'number', 'Queue statistics calculated accurately')
   } catch (e: any) {
     assert(false, `Staff dashboard exception: ${e.message}`)
+  }
+
+  // -------------------------------------------------------------------------
+  // TEST 10: User Order History Privacy
+  // -------------------------------------------------------------------------
+  console.log('\n--- TEST 10: User Order History Privacy ---')
+  try {
+    // 10a. Unauthenticated request to user orders returns 401
+    const unauthRes = await fetch(`${BASE_URL}/api/orders/user/student-alice`)
+    assert(unauthRes.status === 401, 'Unauthenticated access to user orders returns HTTP 401')
+
+    // 10b. Student Bob cannot view Student Alice orders (HTTP 403)
+    const bobRes = await fetch(`${BASE_URL}/api/orders/user/student-alice`, {
+      headers: getCustomerAuthHeader('student-bob'),
+    })
+    assert(bobRes.status === 403, "Student Bob viewing Alice's order history returns HTTP 403")
+
+    // 10c. Student Alice can view her own orders (HTTP 200)
+    const aliceRes = await fetch(`${BASE_URL}/api/orders/user/student-alice`, {
+      headers: getCustomerAuthHeader('student-alice'),
+    })
+    assert(aliceRes.status === 200, 'Student Alice viewing own order history returns HTTP 200')
+
+    // 10d. Staff can view student orders (HTTP 200)
+    const staffViewRes = await fetch(`${BASE_URL}/api/orders/user/student-alice`, {
+      headers: STAFF_AUTH_HEADER,
+    })
+    assert(staffViewRes.status === 200, 'Staff viewing customer order history returns HTTP 200')
+  } catch (e: any) {
+    assert(false, `Order privacy exception: ${e.message}`)
   }
 
   // -------------------------------------------------------------------------

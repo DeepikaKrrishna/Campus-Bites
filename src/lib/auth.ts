@@ -271,3 +271,27 @@ export function onAuthStateChange(callback: (user: AppUser | null) => void): () 
     subscription.unsubscribe()
   }
 }
+
+export async function getAuthToken(): Promise<string | null> {
+  if (isSupabaseConfigured && supabase) {
+    try {
+      const { data } = await supabase.auth.getSession()
+      return data.session?.access_token || null
+    } catch {
+      return null
+    }
+  }
+  return null
+}
+
+export async function getAuthHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  }
+  const token = await getAuthToken()
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`
+  }
+  return headers
+}
+

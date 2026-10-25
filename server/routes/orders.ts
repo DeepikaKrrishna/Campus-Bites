@@ -8,7 +8,7 @@ import {
   getUserOrdersList,
   appendStatusHistory,
 } from '../db'
-import { config } from '../config'
+import { requireAuth, requireStaff, optionalAuth } from '../auth'
 
 export const ordersRouter = Router()
 
@@ -42,9 +42,9 @@ function genTokenNumber(): number {
  * 1. Create Order (Validated Server-Side)
  * POST /api/orders/create
  */
-ordersRouter.post('/create', async (req: Request, res: Response) => {
+ordersRouter.post('/create', optionalAuth, async (req: Request, res: Response) => {
   try {
-    const { userId, items, paymentMethod = 'upi' } = req.body
+    const { items, paymentMethod = 'upi' } = req.body
 
     const menu = await getAuthoritativeMenu()
     const validation = validateCartAndCalculateTotals(items, menu)
@@ -58,7 +58,9 @@ ordersRouter.post('/create', async (req: Request, res: Response) => {
     const tokenNumber = genTokenNumber()
     const etaMinutes = Math.min(25, Math.max(10, Math.round(subtotal / 30) + 8))
     const estimatedReadyAt = new Date(Date.now() + etaMinutes * 60 * 1000).toISOString()
-    const effectiveUserId = userId || 'demo-student'
+
+    // Enforce authenticated user ID if logged in, preventing customer ID spoofing
+    const effectiveUserId = req.user?.id || req.body.userId || 'demo-student'
 
     const order = await saveOrder({
       user_id: effectiveUserId,
@@ -71,7 +73,7 @@ ordersRouter.post('/create', async (req: Request, res: Response) => {
       total,
       currency: 'INR',
       payment: paymentMethod,
-      payment_status: paymentMethod === 'cash' ? 'PENDING' : 'PENDING',
+      payment_status: 'PENDING',
       status: 'PLACED',
       stage: 0,
       eta_minutes: etaMinutes,
@@ -90,10 +92,21 @@ ordersRouter.post('/create', async (req: Request, res: Response) => {
 /**
  * 2. Get User Orders
  * GET /api/orders/user/:userId
+ * Protected: Customers can only fetch their OWN orders. Staff can inspect any customer's orders.
  */
-ordersRouter.get('/user/:userId', async (req: Request, res: Response) => {
+ordersRouter.get('/user/:userId', requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = Array.isArray(req.params.userId) ? req.params.userId[0] : (req.params.userId || '')
+    const authenticatedUser = req.user!
+
+    // Verify ownership or staff privileges
+    if (authenticatedUser.id !== userId && !authenticatedUser.isStaff) {
+      return res.status(403).json({
+        success: false,
+        error: 'Forbidden: You are only authorized to view your own order history.',
+      })
+    }
+
     const orders = await getUserOrdersList(userId)
     return res.status(200).json({ success: true, orders })
   } catch (error: any) {
@@ -102,36 +115,54 @@ ordersRouter.get('/user/:userId', async (req: Request, res: Response) => {
 })
 
 /**
- * 3. Update Order Status (Strict State Machine for Staff)
+ * 3. Update Order Status (Strict State Machine with Verified Authorization)
  * POST /api/orders/:id/status
+ * - Transitions (ACCEPTED, PREPARING, READY_FOR_PICKUP, PICKED_UP) require verified STAFF authentication.
+ * - CANCELLED is allowed for customer ONLY when order is still PLACED and user owns the order.
  */
-ordersRouter.post('/:id/status', async (req: Request, res: Response) => {
+ordersRouter.post('/:id/status', requireAuth, async (req: Request, res: Response) => {
   try {
     const id = Array.isArray(req.params.id) ? req.params.id[0] : (req.params.id || '')
-    const { newStatus, note, reason, staffPasskey } = req.body
+    const { newStatus, note, reason } = req.body
+    const authenticatedUser = req.user!
 
-    // 1. Verify Authorization (either passkey or auth header)
-    const authHeader = req.headers.authorization
-    const isPasskeyValid = staffPasskey === config.staffSecretPasskey
-    const isStaffAuthorized = isPasskeyValid || (authHeader && authHeader.length > 20)
-
-    if (!isStaffAuthorized && newStatus !== 'CANCELLED') {
-      return res.status(403).json({
-        success: false,
-        error: 'Unauthorized: Only authorized canteen staff can update order progression.',
-      })
-    }
-
-    // 2. Fetch current order from DB
+    // 1. Fetch current order from DB
     const currentOrder = await getOrderById(id)
-
     if (!currentOrder) {
       return res.status(404).json({ success: false, error: 'Order not found' })
     }
 
     const currentStatus = currentOrder.status || STAGE_TO_STATUS[currentOrder.stage] || 'PLACED'
 
-    // 3. Strict State Machine Validation
+    // 2. Strict Role-Based Authorization
+    if (newStatus === 'CANCELLED') {
+      // Must be order owner or staff
+      const isOwner = currentOrder.user_id === authenticatedUser.id
+      if (!isOwner && !authenticatedUser.isStaff) {
+        return res.status(403).json({
+          success: false,
+          error: 'Forbidden: You can only cancel your own orders.',
+        })
+      }
+
+      // Customer can ONLY cancel before kitchen starts preparation
+      if (!authenticatedUser.isStaff && currentStatus !== 'PLACED') {
+        return res.status(403).json({
+          success: false,
+          error: `Customer cannot cancel order once kitchen has ${currentStatus.toLowerCase()} it. Please contact counter staff.`,
+        })
+      }
+    } else {
+      // All other status progressions are restricted exclusively to verified staff
+      if (!authenticatedUser.isStaff) {
+        return res.status(403).json({
+          success: false,
+          error: 'Unauthorized: Only authorized canteen staff can update order kitchen progression.',
+        })
+      }
+    }
+
+    // 3. Strict State Machine Transition Rules
     const VALID_TRANSITIONS: Record<string, string[]> = {
       PLACED: ['ACCEPTED', 'CANCELLED'],
       ACCEPTED: ['PREPARING', 'CANCELLED'],
@@ -151,7 +182,7 @@ ordersRouter.post('/:id/status', async (req: Request, res: Response) => {
 
     const newStage = STATUS_TO_STAGE[newStatus] ?? currentOrder.stage
 
-    // 4. Update order in database
+    // 4. Update order in database (keep payment_status separate and unmanipulated)
     const updatePayload: any = {
       status: newStatus,
       stage: newStage >= 0 ? newStage : currentOrder.stage,
@@ -172,7 +203,7 @@ ordersRouter.post('/:id/status', async (req: Request, res: Response) => {
       order_id: id,
       previous_status: currentStatus,
       new_status: newStatus,
-      actor_role: isPasskeyValid ? 'staff' : 'user',
+      actor_role: authenticatedUser.isStaff ? 'staff' : 'customer',
       status_note: note || (newStatus === 'CANCELLED' ? `Reason: ${reason}` : undefined),
     })
 
@@ -189,15 +220,11 @@ ordersRouter.post('/:id/status', async (req: Request, res: Response) => {
 /**
  * 4. Staff Cash Collection
  * POST /api/orders/:id/collect-cash
+ * Protected: Requires verified staff authentication
  */
-ordersRouter.post('/:id/collect-cash', async (req: Request, res: Response) => {
+ordersRouter.post('/:id/collect-cash', requireStaff, async (req: Request, res: Response) => {
   try {
     const id = Array.isArray(req.params.id) ? req.params.id[0] : (req.params.id || '')
-    const { staffPasskey } = req.body
-
-    if (staffPasskey !== config.staffSecretPasskey) {
-      return res.status(403).json({ success: false, error: 'Unauthorized staff action' })
-    }
 
     const updated = await updateOrderRecord(id, {
       payment_status: 'PAID',
@@ -209,7 +236,7 @@ ordersRouter.post('/:id/collect-cash', async (req: Request, res: Response) => {
 
     return res.status(200).json({
       success: true,
-      message: 'Physical cash payment collected and recorded.',
+      message: 'Physical cash payment collected and recorded by authorized staff.',
       order: updated,
     })
   } catch (error: any) {
@@ -220,11 +247,26 @@ ordersRouter.post('/:id/collect-cash', async (req: Request, res: Response) => {
 /**
  * 5. Rate Order
  * POST /api/orders/:id/rate
+ * Protected: Customer must own the order and order must be completed (PICKED_UP)
  */
-ordersRouter.post('/:id/rate', async (req: Request, res: Response) => {
+ordersRouter.post('/:id/rate', requireAuth, async (req: Request, res: Response) => {
   try {
     const id = Array.isArray(req.params.id) ? req.params.id[0] : (req.params.id || '')
     const { rating, comment } = req.body
+    const authenticatedUser = req.user!
+
+    const currentOrder = await getOrderById(id)
+    if (!currentOrder) {
+      return res.status(404).json({ success: false, error: 'Order not found' })
+    }
+
+    if (currentOrder.user_id !== authenticatedUser.id && !authenticatedUser.isStaff) {
+      return res.status(403).json({ success: false, error: 'Forbidden: You can only rate your own orders.' })
+    }
+
+    if (currentOrder.status !== 'PICKED_UP') {
+      return res.status(400).json({ success: false, error: 'Only completed orders can be reviewed.' })
+    }
 
     const parsedRating = Number(rating)
     if (parsedRating < 1 || parsedRating > 5) {
@@ -235,10 +277,6 @@ ordersRouter.post('/:id/rate', async (req: Request, res: Response) => {
       rating: parsedRating,
       rating_comment: comment || null,
     })
-
-    if (!updated) {
-      return res.status(404).json({ success: false, error: 'Order not found' })
-    }
 
     return res.status(200).json({ success: true, order: updated })
   } catch (error: any) {

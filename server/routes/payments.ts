@@ -12,6 +12,7 @@ import {
   updatePaymentRecord,
   appendStatusHistory,
 } from '../db'
+import { optionalAuth } from '../auth'
 
 export const paymentsRouter = Router()
 
@@ -40,7 +41,7 @@ function genTokenNumber(): number {
  * 1. Create Payment Order
  * POST /api/payments/create-order
  */
-paymentsRouter.post('/create-order', async (req: Request, res: Response) => {
+paymentsRouter.post('/create-order', optionalAuth, async (req: Request, res: Response) => {
   try {
     const { userId, items, paymentMethod = 'upi', userEmail, userName } = req.body
 
@@ -61,7 +62,7 @@ paymentsRouter.post('/create-order', async (req: Request, res: Response) => {
     const tokenNumber = genTokenNumber()
     const etaMinutes = Math.min(25, Math.max(10, Math.round(subtotal / 30) + 8))
     const estimatedReadyAt = new Date(Date.now() + etaMinutes * 60 * 1000).toISOString()
-    const effectiveUserId = userId || 'demo-student'
+    const effectiveUserId = req.user?.id || userId || 'demo-student'
 
     // 2. Persist order in resilient database
     const savedOrder = await saveOrder({
