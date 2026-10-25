@@ -7,6 +7,10 @@
     "dev": "vite",
     "server": "tsx server/index.ts",
     "build": "vite build",
+    "test": "npm --prefix staff-dashboard test",
+    "test:staff": "npm --prefix staff-dashboard test",
+    "staff:dev": "npm --prefix staff-dashboard run dev",
+    "staff:api": "npm --prefix staff-dashboard run dev:api",
     "preview": "vite preview",
     "format": "oxfmt"
   },
