@@ -236,7 +236,7 @@ ordersRouter.post('/:id/status', requireAuth, async (req: Request, res: Response
       },
     })
 
-    if (!result.ok) {
+    if (result.ok === false) {
       if (result.code === 'CONFLICT') {
         return res.status(409).json({
           success: false,
