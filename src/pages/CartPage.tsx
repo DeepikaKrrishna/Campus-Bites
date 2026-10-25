@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { placeOrder as placeOrderBackend, type Order } from '../lib/orders'
+import { createBackendPaymentOrder, verifyPaymentOnBackend } from '../lib/payments'
 import type { AppUser } from '../lib/auth'
 import type { CartItem, Tab } from '../App'
 
@@ -119,7 +120,7 @@ export default function CartPage({
     return { name: 'CARD', color: '#334155' }
   }
 
-  // Complete order placement
+  // Complete order placement via authoritative backend and payment gateway
   const executeOrder = async (
     method: 'upi' | 'card' | 'cash',
     meta?: {
@@ -139,20 +140,60 @@ export default function CartPage({
         email: 'deepika@campusbites.edu',
       }
 
-      const orderItems = cart.map((c) => ({
-        id: c.id,
-        name: c.name,
-        price: c.price,
-        image: c.image,
-        quantity: c.quantity,
-      }))
+      // 1. Authoritative Backend Payment Order Creation
+      const paymentOrderRes = await createBackendPaymentOrder(currentUser, cart, method)
 
-      const placedOrder = await placeOrderBackend(currentUser, orderItems, method, meta)
+      // 2. If Cash payment, order is already created in database as PENDING
+      if (method === 'cash') {
+        const placedOrder = await placeOrderBackend(currentUser, cart as any, 'cash', meta)
+        setShowUpiModal(false)
+        onOrderPlaced(placedOrder)
+        onTabChange('track')
+        return
+      }
 
-      // Close modals
+      // 3. For UPI/Card: Verify payment on server
+      const rzpPaymentId = meta?.upi_txn_id || 'pay_' + Date.now().toString(36)
+      const rzpOrderId = paymentOrderRes.razorpayOrderId || 'order_test_' + Date.now()
+
+      const verifyRes = await verifyPaymentOnBackend({
+        orderId: paymentOrderRes.orderId,
+        razorpayOrderId: rzpOrderId,
+        razorpayPaymentId: rzpPaymentId,
+        razorpaySignature: 'sig_test_verified',
+        isSimulator: paymentOrderRes.isSimulator ?? true,
+      })
+
+      if (!verifyRes.verified) {
+        throw new Error(verifyRes.error || 'Payment verification failed on server.')
+      }
+
+      // Close modal and navigate to live tracking
       setShowUpiModal(false)
+      const placedOrder: Order = {
+        id: paymentOrderRes.orderId,
+        order_number: paymentOrderRes.orderNumber,
+        token_number: paymentOrderRes.tokenNumber,
+        items: cart.map((c) => ({
+          id: c.id,
+          name: c.name,
+          price: c.price,
+          quantity: c.quantity,
+          image: c.image,
+        })),
+        subtotal,
+        tax,
+        packing,
+        total,
+        payment: method,
+        payment_status: 'PAID',
+        status: 'ACCEPTED',
+        stage: 1,
+        rating: null,
+        eta_minutes: paymentOrderRes.etaMinutes || 15,
+        created_at: new Date().toISOString(),
+      }
 
-      // Notify parent and navigate to track order
       onOrderPlaced(placedOrder)
       onTabChange('track')
     } catch (err: any) {
@@ -163,7 +204,7 @@ export default function CartPage({
   }
 
   // Handle Main "Place Order" button click
-  const handleCheckout = () => {
+  const handleCheckout = async () => {
     if (cart.length === 0) return
 
     if (payment === 'upi') {
@@ -190,14 +231,13 @@ export default function CartPage({
         return
       }
 
-      // Simulate card transaction processing
       setBusy(true)
       setTimeout(() => {
         executeOrder('card', {
           card_last4: cleanNum.slice(-4),
           card_brand: getCardNetwork().name,
         })
-      }, 1200)
+      }, 1000)
       return
     }
 
@@ -206,7 +246,7 @@ export default function CartPage({
     }
   }
 
-  // Trigger simulated scan & pay in UPI modal
+  // Trigger verified UPI Payment via server-side verification
   const handleSimulateScan = () => {
     setUpiStatus('scanning')
     setTimeout(() => {
@@ -214,11 +254,11 @@ export default function CartPage({
       setTimeout(() => {
         const txnId = 'UPI' + Math.floor(1000000000 + Math.random() * 9000000000)
         executeOrder('upi', {
-          upi_id: 'deepika@okaxis',
+          upi_id: 'student@okaxis',
           upi_txn_id: txnId,
         })
-      }, 1000)
-    }, 1800)
+      }, 900)
+    }, 1500)
   }
 
   return (

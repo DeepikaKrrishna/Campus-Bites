@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import confetti from 'canvas-confetti'
-import { getOrders, rateOrder, subscribeToOrder, type Order } from '../lib/orders'
+import { getOrders, rateOrder, cancelOrder, subscribeToOrder, type Order } from '../lib/orders'
 import type { AppUser } from '../lib/auth'
 import type { Tab } from '../App'
 
@@ -13,20 +13,23 @@ type Props = {
 const STAGES = [
   {
     stage: 0,
+    status: 'PLACED',
     label: 'Order Placed',
-    sub: 'Order received at canteen counter',
+    sub: 'Ticket registered in canteen kitchen queue',
     icon: '📝',
     duration: '0-2 min',
   },
   {
     stage: 1,
-    label: 'Payment Confirmed',
-    sub: 'Kitchen has accepted your order ticket',
-    icon: '💳',
+    status: 'ACCEPTED',
+    label: 'Kitchen Ticket Accepted',
+    sub: 'Canteen chef confirmed your order ticket',
+    icon: '👨‍🍳',
     duration: '2-4 min',
   },
   {
     stage: 2,
+    status: 'PREPARING',
     label: 'Cooking in Kitchen',
     sub: 'Chef is preparing your meal fresh and hot',
     icon: '🍳',
@@ -34,17 +37,19 @@ const STAGES = [
   },
   {
     stage: 3,
-    label: 'Quality Check & Packing',
-    sub: 'Packed in eco container with condiments',
-    icon: '📦',
-    duration: '10-13 min',
+    status: 'READY_FOR_PICKUP',
+    label: 'Ready for Pickup! 🎉',
+    sub: 'Collect from Counter 2 Window with your token',
+    icon: '🔔',
+    duration: 'Ready',
   },
   {
     stage: 4,
-    label: 'Ready for Pickup! 🎉',
-    sub: 'Collect from Pickup Window (Counter 2)',
-    icon: '🔔',
-    duration: 'Ready',
+    status: 'PICKED_UP',
+    label: 'Handed Over & Completed ✅',
+    sub: 'Order collected by student. Enjoy your meal!',
+    icon: '😋',
+    duration: 'Served',
   },
 ]
 
@@ -68,9 +73,13 @@ export default function TrackPage({ user, onTabChange, onReorder }: Props) {
   const [feedbackComment, setFeedbackComment] = useState('')
   const [ratingSubmitted, setRatingSubmitted] = useState(false)
   const [submittingRating, setSubmittingRating] = useState(false)
+  const [showCancelModal, setShowCancelModal] = useState(false)
+  const [cancelReasonInput, setCancelReasonInput] = useState('Change of plans')
+  const [cancelling, setCancelling] = useState(false)
 
   // Live countdown timer state (in seconds)
   const [remainingSecs, setRemainingSecs] = useState<number>(780) // 13 mins
+  const prevStageRef = useRef<number>(-1)
 
   const loadOrders = useCallback(async () => {
     const currentUserId = user?.id || 'demo-student'
@@ -88,29 +97,38 @@ export default function TrackPage({ user, onTabChange, onReorder }: Props) {
     loadOrders()
   }, [loadOrders])
 
-  // Listen to order updates from local demo tracking
-  useEffect(() => {
-    const handler = () => {
-      loadOrders()
-    }
-    window.addEventListener('cb:order-update', handler)
-    return () => window.removeEventListener('cb:order-update', handler)
-  }, [loadOrders])
-
   // Supabase realtime subscription for active order
   useEffect(() => {
     if (!orders.length) return
     const activeOrder = orders[0]
     const unsub = subscribeToOrder(activeOrder.id, (updated) => {
       setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)))
+
+      // If stage reached ready for pickup (stage 3) or completed (stage 4), fire celebration confetti!
+      if (updated.stage >= 3 && prevStageRef.current < 3) {
+        try {
+          confetti({
+            particleCount: 100,
+            spread: 80,
+            origin: { y: 0.5 },
+            colors: ['#10b981', '#38bdf8', '#fbbf24', '#f43f5e'],
+          })
+        } catch (e) {}
+      }
+      prevStageRef.current = updated.stage
     })
     return unsub
   }, [orders.length > 0 ? orders[0].id : ''])
 
-  // Auto-refresh fallback every 4 seconds
+  // Auto-refresh fallback on window focus or reconnection
   useEffect(() => {
-    const interval = setInterval(loadOrders, 4000)
-    return () => clearInterval(interval)
+    const onFocus = () => loadOrders()
+    window.addEventListener('focus', onFocus)
+    window.addEventListener('online', onFocus)
+    return () => {
+      window.removeEventListener('focus', onFocus)
+      window.removeEventListener('online', onFocus)
+    }
   }, [loadOrders])
 
   // Active countdown timer ticker
@@ -120,7 +138,7 @@ export default function TrackPage({ user, onTabChange, onReorder }: Props) {
 
     // Calculate initial remaining seconds based on stage
     const totalSecs = (active.eta_minutes || 15) * 60
-    const stageProgress = active.stage / 4
+    const stageProgress = active.stage >= 0 ? active.stage / 4 : 0
     const initialRemaining = Math.max(0, Math.round(totalSecs * (1 - stageProgress)))
     setRemainingSecs(initialRemaining)
 
@@ -130,6 +148,20 @@ export default function TrackPage({ user, onTabChange, onReorder }: Props) {
 
     return () => clearInterval(timer)
   }, [orders.length > 0 ? orders[0]?.stage : 0])
+
+  const handleCancelOrder = async () => {
+    if (!orders[0]) return
+    setCancelling(true)
+    try {
+      const updated = await cancelOrder(orders[0].id, cancelReasonInput)
+      setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)))
+      setShowCancelModal(false)
+    } catch (err: any) {
+      alert(err.message || 'Failed to cancel order.')
+    } finally {
+      setCancelling(false)
+    }
+  }
 
   const activeOrder = orders[0]
   const pastOrders = orders.slice(1)
@@ -224,7 +256,10 @@ export default function TrackPage({ user, onTabChange, onReorder }: Props) {
     )
   }
 
-  const isReady = activeOrder.stage >= 4
+  const isCancelled = activeOrder.status === 'CANCELLED' || activeOrder.stage === -1
+  const isReady = activeOrder.status === 'READY_FOR_PICKUP' || activeOrder.stage === 3
+  const isCompleted = activeOrder.status === 'PICKED_UP' || activeOrder.stage >= 4
+  const canCancel = (activeOrder.status === 'PLACED' || activeOrder.status === 'ACCEPTED') && !isCancelled
   const formattedMinutes = Math.floor(remainingSecs / 60)
   const formattedSeconds = remainingSecs % 60
 
@@ -237,24 +272,56 @@ export default function TrackPage({ user, onTabChange, onReorder }: Props) {
             Live Order Status
           </h1>
           <p style={{ fontSize: 12, color: '#64748b', margin: 0 }}>
-            {isReady ? 'Your meal is ready for collection!' : 'Real-time kitchen tracking'}
+            {isCancelled
+              ? 'This order has been cancelled.'
+              : isReady
+              ? 'Your meal is ready for collection!'
+              : isCompleted
+              ? 'Order completed. Enjoy your meal!'
+              : 'Real-time kitchen tracking'}
           </p>
         </div>
 
-        <span
+        <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          <span
+            style={{
+              fontSize: 10.5,
+              fontWeight: 800,
+              color: isCancelled ? '#b91c1c' : isReady ? '#15803d' : isCompleted ? '#4338ca' : '#0369a1',
+              background: isCancelled ? '#fee2e2' : isReady ? '#dcfce7' : isCompleted ? '#e0e7ff' : '#e0f2fe',
+              padding: '4px 10px',
+              borderRadius: 12,
+              border: `1px solid ${isCancelled ? '#fca5a5' : isReady ? '#86efac' : isCompleted ? '#c7d2fe' : '#7dd3fc'}`,
+            }}
+          >
+            {isCancelled ? 'CANCELLED' : isReady ? 'READY FOR PICKUP' : isCompleted ? 'PICKED UP' : 'IN KITCHEN'}
+          </span>
+        </div>
+      </div>
+
+      {/* Cancelled Alert Banner */}
+      {isCancelled && (
+        <div
           style={{
-            fontSize: 11,
-            fontWeight: 800,
-            color: isReady ? '#15803d' : '#0369a1',
-            background: isReady ? '#dcfce7' : '#e0f2fe',
-            padding: '4px 10px',
-            borderRadius: 12,
-            border: `1px solid ${isReady ? '#86efac' : '#7dd3fc'}`,
+            background: '#fef2f2',
+            border: '1.5px solid #fecaca',
+            borderRadius: 16,
+            padding: '14px 16px',
+            marginBottom: 16,
+            color: '#991b1b',
           }}
         >
-          {isReady ? 'READY FOR PICKUP' : 'PREPARING'}
-        </span>
-      </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+            <span style={{ fontSize: 18 }}>🛑</span>
+            <strong style={{ fontSize: 14 }}>Order Cancelled</strong>
+          </div>
+          <p style={{ fontSize: 12, margin: 0, color: '#b91c1c' }}>
+            {activeOrder.cancellation_reason
+              ? `Reason: ${activeOrder.cancellation_reason}`
+              : 'This order was cancelled. Any online payment will be refunded to your source UPI account.'}
+          </p>
+        </div>
+      )}
 
       {/* ================= HERO TOKEN & STATUS BANNER ================= */}
       <div
@@ -442,6 +509,53 @@ export default function TrackPage({ user, onTabChange, onReorder }: Props) {
             )
           })}
         </div>
+      </div>
+
+      {/* ================= ESTIMATED PREPARATION TIME & CANCELLATION ================= */}
+      <div
+        style={{
+          background: '#ffffff',
+          borderRadius: 20,
+          padding: '16px 20px',
+          marginBottom: 16,
+          boxShadow: '0 2px 10px rgba(0,0,0,0.04)',
+          border: '1px solid #f1f5f9',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ fontSize: 18 }}>⏱️</span>
+            <div>
+              <p style={{ fontSize: 13, fontWeight: 800, margin: 0, color: '#0f172a' }}>
+                Estimated Preparation Time
+              </p>
+              <p style={{ fontSize: 11, color: '#64748b', margin: '1px 0 0' }}>
+                ~{activeOrder.eta_minutes} min ({activeOrder.items?.length || 1} items)
+              </p>
+            </div>
+          </div>
+
+          {canCancel && (
+            <button
+              onClick={() => setShowCancelModal(true)}
+              style={{
+                background: '#fee2e2',
+                color: '#b91c1c',
+                border: '1px solid #fca5a5',
+                borderRadius: 8,
+                padding: '6px 12px',
+                fontSize: 11,
+                fontWeight: 700,
+                cursor: 'pointer',
+              }}
+            >
+              Cancel Order
+            </button>
+          )}
+        </div>
+        <p style={{ fontSize: 10.5, color: '#94a3b8', margin: '6px 0 0', lineHeight: 1.4 }}>
+          *Clearly labeled estimate based on dish preparation time & kitchen queue. Order is only marked ready once physical preparation is completed by canteen staff.
+        </p>
       </div>
 
       {/* ================= INTERACTIVE RATING SECTION ================= */}
@@ -732,6 +846,96 @@ export default function TrackPage({ user, onTabChange, onReorder }: Props) {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Cancellation Modal for Students */}
+      {showCancelModal && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.6)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 100,
+            padding: 20,
+          }}
+        >
+          <div
+            style={{
+              background: '#ffffff',
+              borderRadius: 20,
+              padding: 24,
+              maxWidth: 340,
+              width: '100%',
+              boxShadow: '0 20px 40px rgba(0,0,0,0.2)',
+            }}
+          >
+            <h3 style={{ fontSize: 16, fontWeight: 800, margin: '0 0 8px', color: '#0f172a' }}>
+              Cancel Order #{activeOrder.order_number}?
+            </h3>
+            <p style={{ fontSize: 13, color: '#64748b', margin: '0 0 16px', lineHeight: 1.4 }}>
+              Are you sure you want to cancel this order? If paid online via UPI, your payment will be refunded.
+            </p>
+
+            <select
+              value={cancelReasonInput}
+              onChange={(e) => setCancelReasonInput(e.target.value)}
+              style={{
+                width: '100%',
+                padding: '10px',
+                borderRadius: 10,
+                border: '1.5px solid #e2e8f0',
+                fontSize: 13,
+                marginBottom: 16,
+                outline: 'none',
+              }}
+            >
+              <option value="Change of plans">Change of plans</option>
+              <option value="Class started early">Class started early</option>
+              <option value="Ordered by mistake">Ordered by mistake</option>
+              <option value="Taking too long">Taking too long</option>
+            </select>
+
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button
+                disabled={cancelling}
+                onClick={() => setShowCancelModal(false)}
+                style={{
+                  flex: 1,
+                  padding: '11px',
+                  borderRadius: 10,
+                  background: '#f1f5f9',
+                  color: '#475569',
+                  border: 'none',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                Keep Order
+              </button>
+              <button
+                disabled={cancelling}
+                onClick={handleCancelOrder}
+                style={{
+                  flex: 1,
+                  padding: '11px',
+                  borderRadius: 10,
+                  background: '#ef4444',
+                  color: '#ffffff',
+                  border: 'none',
+                  fontSize: 13,
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                {cancelling ? 'Cancelling…' : 'Yes, Cancel'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

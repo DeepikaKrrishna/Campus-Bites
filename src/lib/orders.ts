@@ -1,12 +1,23 @@
 import { supabase, isSupabaseConfigured } from './supabase'
 import type { AppUser } from './auth'
 
+export type OrderStatus =
+  | 'PLACED'
+  | 'ACCEPTED'
+  | 'PREPARING'
+  | 'READY_FOR_PICKUP'
+  | 'PICKED_UP'
+  | 'CANCELLED'
+
+export type PaymentStatus = 'PENDING' | 'PAID' | 'FAILED' | 'REFUNDED'
+
 export type OrderItem = {
   id: number
   name: string
   price: number
-  image: string
+  image?: string
   quantity: number
+  subtotal?: number
 }
 
 export type Order = {
@@ -19,23 +30,40 @@ export type Order = {
   packing: number
   total: number
   payment: 'cash' | 'upi' | 'card'
-  payment_meta?: {
-    upi_id?: string
-    upi_txn_id?: string
-    card_last4?: string
-    card_brand?: string
-  }
-  stage: number // 0=Placed, 1=Confirmed, 2=Preparing, 3=Packing, 4=Ready for Pickup
+  payment_status: PaymentStatus
+  status: OrderStatus
+  stage: number // 0=Placed, 1=Accepted, 2=Preparing, 3=Ready for Pickup, 4=Picked up, -1=Cancelled
   rating: number | null
   rating_comment?: string
   rating_tags?: string[]
   eta_minutes: number
+  estimated_ready_at?: string
+  cancellation_reason?: string
+  notes?: string
   created_at: string
+  updated_at?: string
 }
 
-const STORAGE_KEY = 'cb_orders'
+export const STAGE_TO_STATUS: Record<number, OrderStatus> = {
+  0: 'PLACED',
+  1: 'ACCEPTED',
+  2: 'PREPARING',
+  3: 'READY_FOR_PICKUP',
+  4: 'PICKED_UP',
+}
 
-export function readLocalOrders(): Order[] {
+export const STATUS_TO_STAGE: Record<OrderStatus, number> = {
+  PLACED: 0,
+  ACCEPTED: 1,
+  PREPARING: 2,
+  READY_FOR_PICKUP: 3,
+  PICKED_UP: 4,
+  CANCELLED: -1,
+}
+
+const STORAGE_KEY = 'cb_orders_cache'
+
+export function readCachedOrders(): Order[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     return raw ? JSON.parse(raw) : []
@@ -44,232 +72,229 @@ export function readLocalOrders(): Order[] {
   }
 }
 
-export function writeLocalOrders(orders: Order[]): void {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(orders))
+export function writeCachedOrders(orders: Order[]): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(orders))
+  } catch {}
 }
 
-function genOrderNumber(): string {
-  return 'CB' + String(Math.floor(10000 + Math.random() * 90000))
-}
+/**
+ * Normalizes database order row into typed Order
+ */
+export function normalizeOrder(row: any): Order {
+  const items: OrderItem[] = typeof row.items === 'string' ? JSON.parse(row.items) : row.items || []
+  const stage = typeof row.stage === 'number' ? row.stage : 0
+  const status: OrderStatus = row.status || STAGE_TO_STATUS[stage] || 'PLACED'
 
-function genTokenNumber(): number {
-  return Math.floor(10 + Math.random() * 89)
-}
-
-// Stage advancement timers for realistic interactive demo/local simulation
-const activeTimers: Record<string, NodeJS.Timeout[]> = {}
-
-export function startDemoTracking(orderId: string, baseEtaMin: number = 15) {
-  // Clear any existing timers for this order
-  if (activeTimers[orderId]) {
-    activeTimers[orderId].forEach(clearTimeout)
-    activeTimers[orderId] = []
-  }
-
-  const timers: NodeJS.Timeout[] = []
-
-  const updateOrderStage = (targetStage: number) => {
-    const all = readLocalOrders()
-    const idx = all.findIndex((o) => o.id === orderId)
-    if (idx >= 0 && all[idx].stage < targetStage) {
-      all[idx].stage = targetStage
-      writeLocalOrders(all)
-      window.dispatchEvent(new CustomEvent('cb:order-update', { detail: all[idx] }))
-    }
-  }
-
-  // Fast-forward demo intervals (seconds)
-  // Stage 1: Confirmed after 4 seconds
-  timers.push(setTimeout(() => updateOrderStage(1), 4000))
-  // Stage 2: Preparing in Kitchen after 12 seconds
-  timers.push(setTimeout(() => updateOrderStage(2), 12000))
-  // Stage 3: Quality Check & Packing after 22 seconds
-  timers.push(setTimeout(() => updateOrderStage(3), 22000))
-  // Stage 4: Ready for Pickup after 34 seconds
-  timers.push(setTimeout(() => updateOrderStage(4), 34000))
-
-  activeTimers[orderId] = timers
-}
-
-// Place order
-export async function placeOrder(
-  user: AppUser,
-  items: OrderItem[],
-  payment: 'cash' | 'upi' | 'card',
-  payment_meta?: Order['payment_meta']
-): Promise<Order> {
-  const subtotal = items.reduce((s, i) => s + i.price * i.quantity, 0)
-  const tax = Math.round(subtotal * 0.05)
-  const packing = 10
-  const total = subtotal + tax + packing
-  const orderNumber = genOrderNumber()
-  const tokenNumber = genTokenNumber()
-  const etaMinutes = Math.min(25, Math.max(10, Math.round(subtotal / 30) + 8))
-
-  const order: Order = {
-    id: 'cb-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6),
-    order_number: orderNumber,
-    token_number: tokenNumber,
+  return {
+    id: String(row.id),
+    order_number: row.order_number || 'CB-00000',
+    token_number:
+      row.token_number ||
+      parseInt(String(row.order_number).replace(/\D/g, '').slice(-2), 10) ||
+      12,
     items,
-    subtotal,
-    tax,
-    packing,
-    total,
-    payment,
-    payment_meta,
-    stage: 0,
-    rating: null,
-    eta_minutes: etaMinutes,
-    created_at: new Date().toISOString(),
+    subtotal: Number(row.subtotal || 0),
+    tax: Number(row.tax || 0),
+    packing: Number(row.packing || 10),
+    total: Number(row.total || 0),
+    payment: row.payment || 'upi',
+    payment_status: (row.payment_status || (row.stage >= 1 ? 'PAID' : 'PENDING')) as PaymentStatus,
+    status,
+    stage: STATUS_TO_STAGE[status] ?? stage,
+    rating: row.rating ?? null,
+    rating_comment: row.rating_comment,
+    rating_tags: row.rating_tags,
+    eta_minutes: Number(row.eta_minutes || 15),
+    estimated_ready_at: row.estimated_ready_at,
+    cancellation_reason: row.cancellation_reason,
+    notes: row.notes,
+    created_at: row.created_at || new Date().toISOString(),
+    updated_at: row.updated_at,
   }
-
-  let savedToSupabase = false
-
-  if (isSupabaseConfigured && supabase && !user.id.startsWith('demo-')) {
-    try {
-      const { data, error } = await supabase
-        .from('orders')
-        .insert({
-          user_id: user.id,
-          order_number: orderNumber,
-          items: JSON.stringify(items),
-          subtotal,
-          tax,
-          packing,
-          total,
-          payment,
-          stage: 0,
-          eta_minutes: etaMinutes,
-        })
-        .select()
-        .single()
-
-      if (!error && data) {
-        order.id = data.id
-        savedToSupabase = true
-      } else if (error) {
-        console.warn('Supabase order insert warning (falling back to local):', error.message)
-      }
-    } catch (e) {
-      console.warn('Supabase order insert error, using local storage:', e)
-    }
-  }
-
-  // Always keep in local storage for instant availability and seamless offline support
-  const local = readLocalOrders()
-  local.unshift(order)
-  writeLocalOrders(local)
-
-  // Start real-time progression
-  startDemoTracking(order.id, etaMinutes)
-
-  return order
 }
 
-// Fetch orders
+/**
+ * Fetch authoritative user orders from Supabase PostgreSQL (or API endpoint)
+ */
 export async function getOrders(userId: string): Promise<Order[]> {
-  const localOrders = readLocalOrders()
+  const effectiveUserId = userId.startsWith('demo-') ? '3e5d785b-c8fe-41f4-800b-4a4d8e24d075' : userId
 
-  if (isSupabaseConfigured && supabase && !userId.startsWith('demo-')) {
+  // 1. First try direct Supabase query
+  if (isSupabaseConfigured && supabase) {
     try {
       const { data, error } = await supabase
         .from('orders')
         .select('*')
-        .eq('user_id', userId)
+        .eq('user_id', effectiveUserId)
         .order('created_at', { ascending: false })
-        .limit(20)
+        .limit(25)
 
-      if (!error && data && data.length > 0) {
-        const remoteOrders: Order[] = data.map((row: any) => ({
-          id: row.id,
-          order_number: row.order_number,
-          token_number: row.token_number || parseInt(row.order_number.replace(/\D/g, '').slice(-2), 10) || 12,
-          items: typeof row.items === 'string' ? JSON.parse(row.items) : row.items,
-          subtotal: row.subtotal,
-          tax: row.tax,
-          packing: row.packing ?? 10,
-          total: row.total,
-          payment: row.payment,
-          stage: row.stage,
-          rating: row.rating,
-          eta_minutes: row.eta_minutes ?? 15,
-          created_at: row.created_at,
-        }))
-
-        // Merge local & remote (avoiding duplicates)
-        const combined = [...remoteOrders]
-        for (const loc of localOrders) {
-          if (!combined.some((r) => r.order_number === loc.order_number)) {
-            combined.push(loc)
-          }
-        }
-        return combined.sort(
-          (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
-        )
+      if (!error && data) {
+        const parsed = data.map(normalizeOrder)
+        writeCachedOrders(parsed)
+        return parsed
       }
-    } catch (e) {
-      console.warn('Failed fetching orders from Supabase:', e)
+    } catch (err) {
+      console.warn('Supabase getOrders direct error, trying API endpoint:', err)
     }
   }
 
-  return localOrders
+  // 2. Try backend API endpoint
+  try {
+    const res = await fetch(`/api/orders/user/${encodeURIComponent(effectiveUserId)}`)
+    if (res.ok) {
+      const json = await res.json()
+      if (json.success && Array.isArray(json.orders)) {
+        const parsed = json.orders.map(normalizeOrder)
+        writeCachedOrders(parsed)
+        return parsed
+      }
+    }
+  } catch (apiErr) {
+    console.warn('API getOrders error, using cache:', apiErr)
+  }
+
+  return readCachedOrders()
 }
 
-// Rate an order
+/**
+ * Create a new order via authoritative server endpoint
+ */
+export async function placeOrder(
+  user: AppUser,
+  items: OrderItem[],
+  payment: 'cash' | 'upi' | 'card',
+  _meta?: any
+): Promise<Order> {
+  const res = await fetch('/api/orders/create', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      userId: user.id,
+      items: items.map((i) => ({ id: i.id, quantity: i.quantity })),
+      paymentMethod: payment,
+    }),
+  })
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.error || 'Failed to place order.')
+  }
+
+  const data = await res.json()
+  const order = normalizeOrder(data.order)
+
+  // Update local cache
+  const cached = readCachedOrders()
+  cached.unshift(order)
+  writeCachedOrders(cached)
+
+  return order
+}
+
+/**
+ * Cancel an order
+ */
+export async function cancelOrder(orderId: string, reason: string): Promise<Order> {
+  const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}/status`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      newStatus: 'CANCELLED',
+      reason,
+    }),
+  })
+
+  const json = await res.json()
+  if (!res.ok || !json.success) {
+    throw new Error(json.error || 'Failed to cancel order.')
+  }
+
+  const updated = normalizeOrder(json.order)
+
+  // Update cached orders
+  const cached = readCachedOrders().map((o) => (o.id === updated.id ? updated : o))
+  writeCachedOrders(cached)
+
+  return updated
+}
+
+/**
+ * Rate an order
+ */
 export async function rateOrder(
   orderId: string,
   rating: number,
   comment?: string,
-  tags?: string[]
+  _tags?: string[]
 ): Promise<void> {
-  const all = readLocalOrders()
-  const idx = all.findIndex((o) => o.id === orderId)
-  if (idx >= 0) {
-    all[idx].rating = rating
-    all[idx].rating_comment = comment
-    all[idx].rating_tags = tags
-    writeLocalOrders(all)
-    window.dispatchEvent(new CustomEvent('cb:order-update', { detail: all[idx] }))
+  try {
+    await fetch(`/api/orders/${encodeURIComponent(orderId)}/rate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rating, comment }),
+    })
+  } catch (e) {
+    console.warn('Rate order API warning:', e)
   }
 
-  if (isSupabaseConfigured && supabase && !orderId.startsWith('cb-')) {
+  if (isSupabaseConfigured && supabase) {
     try {
-      await supabase.from('orders').update({ rating }).eq('id', orderId)
-    } catch (err) {
-      console.warn('Failed updating rating on Supabase:', err)
-    }
+      await supabase
+        .from('orders')
+        .update({ rating, rating_comment: comment || null })
+        .eq('id', orderId)
+    } catch (e) {}
   }
+
+  const cached = readCachedOrders().map((o) =>
+    o.id === orderId ? { ...o, rating, rating_comment: comment } : o
+  )
+  writeCachedOrders(cached)
 }
 
-// Real-time order subscription
+/**
+ * Real-Time Supabase Subscription to listen to live database updates for an order!
+ * Subscribes to postgres_changes on table 'orders' where id = orderId.
+ * Automatically cleans up the channel when unsubscribed.
+ */
 export function subscribeToOrder(
   orderId: string,
   onUpdate: (order: Order) => void
 ): () => void {
-  if (!isSupabaseConfigured || !supabase || orderId.startsWith('cb-')) {
+  if (!isSupabaseConfigured || !supabase || !orderId) {
     return () => {}
   }
 
   try {
+    const channelName = `realtime-order-${orderId}`
     const channel = supabase
-      .channel('order-' + orderId)
+      .channel(channelName)
       .on(
         'postgres_changes',
         {
-          event: 'UPDATE',
+          event: '*', // Listen to both INSERT and UPDATE
           schema: 'public',
           table: 'orders',
           filter: `id=eq.${orderId}`,
         },
         (payload) => {
-          const row = payload.new as any
-          onUpdate({
-            ...row,
-            items: typeof row.items === 'string' ? JSON.parse(row.items) : row.items,
-          })
+          if (payload.new && typeof payload.new === 'object') {
+            const updated = normalizeOrder(payload.new)
+            onUpdate(updated)
+
+            // Sync with local cache
+            const cached = readCachedOrders().map((o) => (o.id === updated.id ? updated : o))
+            writeCachedOrders(cached)
+          }
         }
       )
-      .subscribe()
+      .subscribe((status) => {
+        if (status === 'CHANNEL_ERROR') {
+          console.warn(`Realtime channel error for order ${orderId}`)
+        }
+      })
 
     return () => {
       supabase?.removeChannel(channel)

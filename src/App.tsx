@@ -5,6 +5,7 @@ import MenuPage from './pages/MenuPage'
 import CartPage from './pages/CartPage'
 import TrackPage from './pages/TrackPage'
 import ProfilePage from './pages/ProfilePage'
+import StaffDashboard from './pages/StaffDashboard'
 import BottomNav from './components/BottomNav'
 import {
   restoreSession,
@@ -24,7 +25,7 @@ export type CartItem = {
   quantity: number
 }
 
-export type Tab = 'home' | 'menu' | 'cart' | 'track' | 'profile'
+export type Tab = 'home' | 'menu' | 'cart' | 'track' | 'profile' | 'staff'
 
 const CART_KEY = 'cb_cart'
 
@@ -194,7 +195,7 @@ export default function App() {
                   id: it.id,
                   name: it.name,
                   price: it.price,
-                  image: it.image,
+                  image: it.image || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&h=300&fit=crop',
                 })
               })
               setTab('cart')
@@ -210,10 +211,14 @@ export default function App() {
             onAddToCart={addToCart}
           />
         )
+      case 'staff':
+        return <StaffDashboard onBackToCustomer={() => setTab('home')} />
       default:
         return null
     }
   }
+
+  const isStaffMode = tab === 'staff'
 
   return (
     <div
@@ -228,7 +233,7 @@ export default function App() {
       <div
         style={{
           width: '100%',
-          maxWidth: 412,
+          maxWidth: isStaffMode ? 480 : 412,
           minHeight: 'calc(100svh - 32px)',
           background: '#ffffff',
           borderRadius: 32,
@@ -237,45 +242,62 @@ export default function App() {
           flexDirection: 'column',
           boxShadow: '0 12px 48px rgba(0,0,0,0.18)',
           position: 'relative',
+          transition: 'max-width 0.2s ease',
         }}
       >
-        {/* Live Backend Indicator Banner */}
+        {/* Live Backend & Staff Switcher Indicator Banner */}
         {isSupabaseConfigured && (
           <div
             style={{
               background: '#15803d',
               color: '#ffffff',
-              textAlign: 'center',
+              padding: '4px 12px',
               fontSize: 10.5,
               fontWeight: 800,
-              padding: '4px 0',
-              letterSpacing: '0.06em',
+              letterSpacing: '0.04em',
               display: 'flex',
               alignItems: 'center',
-              justifyContent: 'center',
-              gap: 6,
+              justifyContent: 'space-between',
             }}
           >
-            <span
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+              <span
+                style={{
+                  width: 7,
+                  height: 7,
+                  borderRadius: '50%',
+                  background: '#4ade80',
+                  boxShadow: '0 0 6px #4ade80',
+                }}
+              />
+              <span>SUPABASE REALTIME ACTIVE</span>
+            </div>
+
+            <button
+              onClick={() => setTab(isStaffMode ? 'home' : 'staff')}
               style={{
-                width: 7,
-                height: 7,
-                borderRadius: '50%',
-                background: '#4ade80',
-                boxShadow: '0 0 6px #4ade80',
+                background: isStaffMode ? '#0f172a' : 'rgba(255, 255, 255, 0.25)',
+                border: '1px solid rgba(255, 255, 255, 0.5)',
+                borderRadius: 6,
+                color: '#ffffff',
+                padding: '2px 8px',
+                fontSize: 9.5,
+                fontWeight: 800,
+                cursor: 'pointer',
               }}
-            />
-            <span>CONNECTED TO SUPABASE BACKEND</span>
+            >
+              {isStaffMode ? '← Student View' : '👨‍🍳 Staff Portal'}
+            </button>
           </div>
         )}
 
         {/* Scrollable View */}
-        <div style={{ flex: 1, overflowY: 'auto', paddingBottom: 68 }}>
+        <div style={{ flex: 1, overflowY: 'auto', paddingBottom: isStaffMode ? 0 : 68 }}>
           {renderPage()}
         </div>
 
-        {/* Fixed Bottom Navigation */}
-        <BottomNav tab={tab} onChange={setTab} totalItems={totalItems} />
+        {/* Fixed Bottom Navigation (only on customer tabs) */}
+        {!isStaffMode && <BottomNav tab={tab} onChange={setTab} totalItems={totalItems} />}
       </div>
     </div>
   )

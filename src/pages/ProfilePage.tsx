@@ -78,6 +78,13 @@ export default function ProfilePage({ user, onLogout, onTabChange, onAddToCart }
 
   const menuSections = [
     {
+      id: 'staff_portal',
+      icon: '👨‍🍳',
+      label: 'Canteen Staff Portal',
+      sub: 'Kitchen dispatch, order acceptance & cooking queue',
+      badge: 'Kitchen',
+    },
+    {
       id: 'history',
       icon: '📋',
       label: 'Order History',
@@ -233,7 +240,7 @@ export default function ProfilePage({ user, onLogout, onTabChange, onAddToCart }
         {menuSections.map((item, i) => (
           <button
             key={item.id}
-            onClick={() => setActiveModal(item.id as any)}
+            onClick={() => (item.id === 'staff_portal' ? onTabChange?.('staff') : setActiveModal(item.id as any))}
             style={{
               width: '100%',
               display: 'flex',
