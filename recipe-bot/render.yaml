@@ -1,0 +1,47 @@
+# Render Blueprint: https://render.com/docs/blueprint-spec
+# Deploys from `main` only after GitHub checks (the CI workflow) pass.
+# Secrets are NOT stored here: Render prompts for values marked `sync: false`.
+services:
+  - type: web
+    name: recipe-bot
+    runtime: python
+    branch: main
+    autoDeployTrigger: checksPass
+    buildCommand: pip install -r requirements.txt
+    # Migrations run before the server starts; a failed migration stops the deploy
+    # and Render keeps serving the previous version.
+    startCommand: alembic upgrade head && uvicorn main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips "*"
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.13.0"
+      - key: APP_ENV
+        value: production
+      - key: TRUST_PROXY
+        value: "true"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: recipe-bot-db
+          property: connectionString
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: OPENROUTER_MODEL
+        value: google/gemma-3-4b-it:free
+      - key: OPENROUTER_FALLBACK_MODELS
+        sync: false
+      - key: APP_PUBLIC_URL
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: AI_RATE_LIMIT_PER_MINUTE
+        value: "8"
+      - key: DEFAULT_CURRENCY
+        value: INR
+
+databases:
+  - name: recipe-bot-db
+    databaseName: recipebot
+    user: recipebot
+    postgresMajorVersion: "16"

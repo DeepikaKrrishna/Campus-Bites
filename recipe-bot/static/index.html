@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="description" content="Recipe Bot turns the ingredients you already have into recipes, rescues food before it expires, plans your week and writes your shopping list.">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#fff7ec" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#17100c" media="(prefers-color-scheme: dark)">
+  <title>Recipe Bot: cook with what you've got</title>
+  <link rel="icon" href="/static/img/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/img/icon-192.png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="preload" href="/static/fonts/fraunces-latin-wght.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/static/fonts/outfit-latin-wght.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/static/css/app.css">
+  <link rel="stylesheet" href="/static/css/views.css">
+  <script src="/static/js/theme.js"></script>
+  <script type="module" src="/static/js/main.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#app">Skip to content</a>
+  <header class="topbar">
+    <div class="wrap topbar__inner">
+      <a class="brand" href="/" data-link aria-label="Recipe Bot home" id="brand"></a>
+      <nav class="mainnav" aria-label="Main" id="mainnav"></nav>
+      <div class="topbar__actions" id="topActions"></div>
+    </div>
+  </header>
+
+  <main id="app" class="wrap" tabindex="-1">
+    <noscript><p>Recipe Bot needs JavaScript to run.</p></noscript>
+  </main>
+
+  <footer class="footer">
+    <div class="wrap">
+      <p><strong>Cook safely:</strong> recipes, cost and nutrition are AI-generated estimates and can be wrong. Always check product labels for allergens, cook food to safe internal temperatures and follow food-storage guidance. Recipe Bot is not medical or dietary advice.</p>
+      <p><a href="/privacy">Privacy</a> · <a href="/terms">Terms of use</a> · Fonts: Fraunces &amp; Outfit (SIL OFL)</p>
+    </div>
+  </footer>
+
+  <nav class="bottomnav" aria-label="Main (mobile)" id="bottomnav"></nav>
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+  <div class="timers" id="timers" aria-live="polite"></div>
+</body>
+</html>
