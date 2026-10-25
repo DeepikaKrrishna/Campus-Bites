@@ -407,3 +407,41 @@ export async function getPaymentRecord(gatewayOrderId: string): Promise<any | nu
   return data
 }
 
+export async function getLatestPaymentForOrder(orderId: string): Promise<any | null> {
+  const { data, error } = await supabase
+    .from('payments')
+    .select('*')
+    .eq('order_id', orderId)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+  if (error) throw new Error('Payment record could not be loaded.')
+  return data
+}
+
+export async function processRazorpayPaymentEvent(input: {
+  eventId?: string
+  eventType: string
+  gatewayOrderId: string
+  paymentId: string
+  amount: number
+  currency: string
+  failureReason?: string
+  failureIsFinal?: boolean
+}): Promise<string> {
+  const { data, error } = await supabase.rpc('process_razorpay_payment_event', {
+    p_event_id: input.eventId || null,
+    p_event_type: input.eventType,
+    p_gateway_order_id: input.gatewayOrderId,
+    p_payment_id: input.paymentId,
+    p_amount: input.amount,
+    p_currency: input.currency,
+    p_failure_reason: input.failureReason || null,
+    p_failure_is_final: input.failureIsFinal ?? true,
+  })
+  if (error || typeof data !== 'string') {
+    console.error('Razorpay payment event persistence failed:', error?.message || 'No result returned')
+    throw new Error('Payment status could not be saved.')
+  }
+  return data
+}
