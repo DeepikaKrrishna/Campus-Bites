@@ -42,8 +42,9 @@ staffRouter.get('/orders', requireStaff, async (req: Request, res: Response) => 
     const { status, limit = 50 } = req.query
     const orders = await getStaffOrdersList(status as string, Number(limit))
     return res.status(200).json({ success: true, orders })
-  } catch (error: any) {
-    return res.status(500).json({ success: false, error: error.message })
+  } catch (error: unknown) {
+    console.error('Staff order list failed:', error instanceof Error ? error.message : 'Unknown error')
+    return res.status(500).json({ success: false, error: 'Unable to load staff orders. Please try again.' })
   }
 })
 
@@ -56,7 +57,8 @@ staffRouter.get('/stats', requireStaff, async (_req: Request, res: Response) => 
   try {
     const stats = await getStaffOrderStats()
     return res.status(200).json({ success: true, stats })
-  } catch (error: any) {
-    return res.status(500).json({ success: false, error: error.message })
+  } catch (error: unknown) {
+    console.error('Staff order stats failed:', error instanceof Error ? error.message : 'Unknown error')
+    return res.status(500).json({ success: false, error: 'Unable to load staff statistics. Please try again.' })
   }
 })

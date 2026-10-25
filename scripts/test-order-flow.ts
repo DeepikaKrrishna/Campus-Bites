@@ -84,9 +84,11 @@ async function runTests() {
     // 2b. Invalid item ID
     const invalidItemRes = await fetch(`${BASE_URL}/api/payments/create-order`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...getCustomerAuthHeader('student-001'),
+      },
       body: JSON.stringify({
-        userId: 'student-001',
         items: [{ id: 9999, quantity: 1 }],
       }),
     })
@@ -97,9 +99,11 @@ async function runTests() {
     // 2c. Invalid Quantity
     const invalidQtyRes = await fetch(`${BASE_URL}/api/payments/create-order`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...getCustomerAuthHeader('student-001'),
+      },
       body: JSON.stringify({
-        userId: 'student-001',
         items: [{ id: 1, quantity: -5 }],
       }),
     })

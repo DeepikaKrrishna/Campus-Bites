@@ -38,6 +38,11 @@ export type Order = {
   rating_tags?: string[]
   eta_minutes: number
   estimated_ready_at?: string
+  accepted_at?: string | null
+  preparing_at?: string | null
+  ready_at?: string | null
+  picked_up_at?: string | null
+  cancelled_at?: string | null
   cancellation_reason?: string
   notes?: string
   created_at: string
@@ -107,6 +112,11 @@ export function normalizeOrder(row: any): Order {
     rating_tags: row.rating_tags,
     eta_minutes: Number(row.eta_minutes || 15),
     estimated_ready_at: row.estimated_ready_at,
+    accepted_at: row.accepted_at,
+    preparing_at: row.preparing_at,
+    ready_at: row.ready_at,
+    picked_up_at: row.picked_up_at,
+    cancelled_at: row.cancelled_at,
     cancellation_reason: row.cancellation_reason,
     notes: row.notes,
     created_at: row.created_at || new Date().toISOString(),
@@ -115,10 +125,29 @@ export function normalizeOrder(row: any): Order {
 }
 
 /**
+ * Fetch a single order by ID (authorized via API — ownership enforced server-side).
+ */
+export async function fetchOrderById(orderId: string): Promise<Order | null> {
+  try {
+    const headers = await getAuthHeaders()
+    const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}`, { headers })
+    if (!res.ok) return null
+    const json = await res.json()
+    if (json.success && json.order) {
+      return normalizeOrder(json.order)
+    }
+  } catch (e) {
+    console.warn('fetchOrderById error:', e)
+  }
+  return null
+}
+
+/**
  * Fetch authoritative user orders from Supabase PostgreSQL (or API endpoint)
  */
 export async function getOrders(userId: string): Promise<Order[]> {
-  const effectiveUserId = userId.startsWith('demo-') ? '3e5d785b-c8fe-41f4-800b-4a4d8e24d075' : userId
+  if (!userId || userId.startsWith('demo-')) return []
+  let loadError = 'Unable to load your orders. Please try again.'
 
   // 1. First try direct Supabase query
   if (isSupabaseConfigured && supabase) {
@@ -126,7 +155,7 @@ export async function getOrders(userId: string): Promise<Order[]> {
       const { data, error } = await supabase
         .from('orders')
         .select('*')
-        .eq('user_id', effectiveUserId)
+        .eq('user_id', userId)
         .order('created_at', { ascending: false })
         .limit(25)
 
@@ -135,28 +164,28 @@ export async function getOrders(userId: string): Promise<Order[]> {
         writeCachedOrders(parsed)
         return parsed
       }
+      if (error) loadError = 'Your orders could not be loaded from the database.'
     } catch (err) {
-      console.warn('Supabase getOrders direct error, trying API endpoint:', err)
+    console.warn('Supabase getOrders direct error, trying API endpoint:', err)
     }
   }
 
   // 2. Try backend API endpoint
   try {
     const headers = await getAuthHeaders()
-    const res = await fetch(`/api/orders/user/${encodeURIComponent(effectiveUserId)}`, { headers })
-    if (res.ok) {
-      const json = await res.json()
-      if (json.success && Array.isArray(json.orders)) {
-        const parsed = json.orders.map(normalizeOrder)
-        writeCachedOrders(parsed)
-        return parsed
-      }
+    const res = await fetch(`/api/orders/user/${encodeURIComponent(userId)}`, { headers })
+    const json = await res.json().catch(() => ({}))
+    if (res.ok && json.success && Array.isArray(json.orders)) {
+      const parsed = json.orders.map(normalizeOrder)
+      writeCachedOrders(parsed)
+      return parsed
     }
+    loadError = json.error || loadError
   } catch (apiErr) {
-    console.warn('API getOrders error, using cache:', apiErr)
+    console.warn('API getOrders error:', apiErr)
   }
 
-  return readCachedOrders()
+  throw new Error(loadError)
 }
 
 /**
@@ -173,7 +202,6 @@ export async function placeOrder(
     method: 'POST',
     headers,
     body: JSON.stringify({
-      userId: user.id,
       items: items.map((i) => ({ id: i.id, quantity: i.quantity })),
       paymentMethod: payment,
     }),
@@ -295,7 +323,10 @@ export function subscribeToOrder(
         }
       )
       .subscribe((status) => {
-        if (status === 'CHANNEL_ERROR') {
+        if (status === 'SUBSCRIBED') {
+          // A fresh authoritative read closes the gap after reconnects or missed events.
+          fetchOrderById(orderId).then((fresh) => fresh && onUpdate(fresh))
+        } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
           console.warn(`Realtime channel error for order ${orderId}`)
         }
       })

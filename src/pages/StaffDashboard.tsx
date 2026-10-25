@@ -86,9 +86,11 @@ export default function StaffDashboard({ onBackToCustomer }: Props) {
       ])
       setOrders(fetchedOrders)
       setStats(fetchedStats)
+      setActionError(null)
       setLoading(false)
     } catch (err) {
       console.warn('Error fetching staff data:', err)
+      setActionError(err instanceof Error ? err.message : 'Unable to load staff orders. Please try again.')
       setLoading(false)
     }
   }, [selectedTab])

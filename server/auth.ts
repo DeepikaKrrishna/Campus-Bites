@@ -1,5 +1,14 @@
+import crypto from 'crypto'
 import type { Request, Response, NextFunction } from 'express'
 import { supabase } from './db'
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** Stable UUID for local integration tests (non-production only). */
+export function testCustomerUuidFromLabel(label: string): string {
+  const hash = crypto.createHash('sha256').update(`campusbites-test-customer:${label}`).digest('hex')
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-4${hash.slice(13, 16)}-a${hash.slice(17, 20)}-${hash.slice(20, 32)}`
+}
 
 export interface AuthenticatedUser {
   id: string
@@ -19,16 +28,6 @@ declare global {
 }
 
 // Trusted memory store for staff roles (synchronized with staff_roles DB table)
-const verifiedStaffUserIds = new Set<string>()
-
-export function registerStaffUserId(userId: string) {
-  verifiedStaffUserIds.add(userId)
-}
-
-export function revokeStaffUserId(userId: string) {
-  verifiedStaffUserIds.delete(userId)
-}
-
 /**
  * Validates a Supabase JWT or authorized test token server-side.
  * Never trusts client-supplied identity or arbitrary header lengths.
@@ -37,7 +36,7 @@ export async function authenticateToken(token: string): Promise<AuthenticatedUse
   if (!token || typeof token !== 'string') return null
 
   // 1. Check for authorized test tokens (strictly for local integration test suites)
-  if (process.env.NODE_ENV !== 'production') {
+  if (process.env.NODE_ENV !== 'production' && process.env.ENABLE_TEST_AUTH === 'true') {
     if (token === 'test_staff_token_secret_2026') {
       return {
         id: '00000000-0000-0000-0000-000000000001',
@@ -48,12 +47,15 @@ export async function authenticateToken(token: string): Promise<AuthenticatedUse
       }
     }
     if (token.startsWith('test_customer_token:')) {
-      const customerId = token.split(':')[1]
+      const customerLabel = token.split(':')[1] || 'student'
+      const customerId = UUID_REGEX.test(customerLabel)
+        ? customerLabel
+        : testCustomerUuidFromLabel(customerLabel)
       return {
         id: customerId,
-        email: `${customerId}@campusbites.edu`,
+        email: `${customerLabel}@campusbites.edu`,
         role: 'customer',
-        name: `Student (${customerId})`,
+        name: `Student (${customerLabel})`,
         isStaff: false,
       }
     }
@@ -83,9 +85,6 @@ export async function authenticateToken(token: string): Promise<AuthenticatedUse
     ) {
       isStaff = true
       role = (sbUser.app_metadata.role as any) || 'staff'
-    } else if (verifiedStaffUserIds.has(userId)) {
-      isStaff = true
-      role = 'staff'
     } else {
       // Query protected staff_roles table in Supabase
       try {
@@ -98,19 +97,9 @@ export async function authenticateToken(token: string): Promise<AuthenticatedUse
         if (staffRow && (staffRow.role === 'staff' || staffRow.role === 'admin')) {
           isStaff = true
           role = staffRow.role
-          verifiedStaffUserIds.add(userId)
         }
       } catch (e) {
-        // Fallback: check email domain convention if configured by admin
-        if (
-          sbUser.email &&
-          (sbUser.email === 'staff.canteen@campusbites.edu' ||
-            sbUser.email.endsWith('@staff.campusbites.edu'))
-        ) {
-          isStaff = true
-          role = 'staff'
-          verifiedStaffUserIds.add(userId)
-        }
+        // A database lookup failure must never grant staff access.
       }
     }
 

@@ -50,6 +50,7 @@ export function isStaffUser(user: AppUser | null): boolean {
 }
 
 export async function fetchStaffOrders(status?: string): Promise<Order[]> {
+  let message = 'Unable to load staff orders. Please try again.'
   try {
     const headers = await getAuthHeaders()
     const url = status && status !== 'ALL' ? `/api/staff/orders?status=${status}` : '/api/staff/orders'
@@ -59,6 +60,10 @@ export async function fetchStaffOrders(status?: string): Promise<Order[]> {
       if (json.success && Array.isArray(json.orders)) {
         return json.orders.map(normalizeOrder)
       }
+      message = json.error || message
+    } else {
+      const json = await res.json().catch(() => ({}))
+      message = json.error || message
     }
   } catch (e) {
     console.warn('API fetchStaffOrders failed, trying direct Supabase:', e)
@@ -67,18 +72,21 @@ export async function fetchStaffOrders(status?: string): Promise<Order[]> {
   // Fallback to Supabase (RLS policy will verify is_staff)
   if (isSupabaseConfigured && supabase) {
     try {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('orders')
         .select('*')
         .order('created_at', { ascending: false })
         .limit(40)
+      if (error) throw error
       if (data) {
         return data.map(normalizeOrder)
       }
-    } catch (e) {}
+    } catch (e) {
+      console.warn('Supabase staff order fallback failed:', e)
+    }
   }
 
-  return []
+  throw new Error(message)
 }
 
 export async function fetchStaffStats(): Promise<{
