@@ -1,6 +1,6 @@
 import { supabase, isSupabaseConfigured } from './supabase'
 import { normalizeOrder, type Order, type OrderStatus } from './orders'
-import type { AppUser } from './auth'
+import { type AppUser, getAuthHeaders } from './auth'
 
 const STAFF_PASSKEY_KEY = 'cb_staff_passkey'
 
@@ -16,17 +16,16 @@ export function clearStoredStaffPasskey(): void {
   localStorage.removeItem(STAFF_PASSKEY_KEY)
 }
 
-export async function verifyStaffPasskey(passkey: string): Promise<boolean> {
+/**
+ * Verifies staff authorization against the server's protected database role.
+ */
+export async function verifyStaffRole(): Promise<boolean> {
   try {
-    const res = await fetch('/api/staff/verify-passkey', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ passkey }),
-    })
-    const data = await res.json()
-    if (res.ok && data.authorized) {
-      saveStoredStaffPasskey(passkey)
-      return true
+    const headers = await getAuthHeaders()
+    const res = await fetch('/api/staff/verify-role', { headers })
+    if (res.ok) {
+      const data = await res.json()
+      return Boolean(data.authorized)
     }
   } catch (err) {
     console.warn('Staff verify error:', err)
@@ -34,45 +33,60 @@ export async function verifyStaffPasskey(passkey: string): Promise<boolean> {
   return false
 }
 
+/**
+ * Checks if a user is an authorized staff member using verified user metadata or email
+ */
 export function isStaffUser(user: AppUser | null): boolean {
   if (!user) return false
-  const passkey = getStoredStaffPasskey()
-  if (passkey) return true
-  if (user.email?.includes('staff') || user.email?.includes('canteen') || user.email === 'staff.canteen@campusbites.edu') {
+  if (
+    (user as any).app_metadata?.role === 'staff' ||
+    (user as any).app_metadata?.role === 'admin' ||
+    user.email === 'staff.canteen@campusbites.edu' ||
+    user.email?.endsWith('@staff.campusbites.edu')
+  ) {
     return true
   }
   return false
 }
 
 export async function fetchStaffOrders(status?: string): Promise<Order[]> {
+  let message = 'Unable to load staff orders. Please try again.'
   try {
+    const headers = await getAuthHeaders()
     const url = status && status !== 'ALL' ? `/api/staff/orders?status=${status}` : '/api/staff/orders'
-    const res = await fetch(url)
+    const res = await fetch(url, { headers })
     if (res.ok) {
       const json = await res.json()
       if (json.success && Array.isArray(json.orders)) {
         return json.orders.map(normalizeOrder)
       }
+      message = json.error || message
+    } else {
+      const json = await res.json().catch(() => ({}))
+      message = json.error || message
     }
   } catch (e) {
     console.warn('API fetchStaffOrders failed, trying direct Supabase:', e)
   }
 
-  // Fallback to Supabase
+  // Fallback to Supabase (RLS policy will verify is_staff)
   if (isSupabaseConfigured && supabase) {
     try {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('orders')
         .select('*')
         .order('created_at', { ascending: false })
         .limit(40)
+      if (error) throw error
       if (data) {
         return data.map(normalizeOrder)
       }
-    } catch (e) {}
+    } catch (e) {
+      console.warn('Supabase staff order fallback failed:', e)
+    }
   }
 
-  return []
+  throw new Error(message)
 }
 
 export async function fetchStaffStats(): Promise<{
@@ -85,7 +99,8 @@ export async function fetchStaffStats(): Promise<{
   totalRevenue: number
 }> {
   try {
-    const res = await fetch('/api/staff/stats')
+    const headers = await getAuthHeaders()
+    const res = await fetch('/api/staff/stats', { headers })
     if (res.ok) {
       const json = await res.json()
       if (json.success) {
@@ -110,15 +125,15 @@ export async function fetchStaffStats(): Promise<{
 export async function updateStaffOrderStatus(
   orderId: string,
   newStatus: OrderStatus,
-  passkey: string,
+  _passkey?: string,
   reason?: string
 ): Promise<Order> {
+  const headers = await getAuthHeaders()
   const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}/status`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({
       newStatus,
-      staffPasskey: passkey,
       reason,
     }),
   })
@@ -131,11 +146,12 @@ export async function updateStaffOrderStatus(
   return normalizeOrder(json.order)
 }
 
-export async function collectCashPayment(orderId: string, passkey: string): Promise<void> {
+export async function collectCashPayment(orderId: string, _passkey?: string): Promise<void> {
+  const headers = await getAuthHeaders()
   const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}/collect-cash`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ staffPasskey: passkey }),
+    headers,
+    body: JSON.stringify({}),
   })
 
   const json = await res.json()
@@ -146,7 +162,7 @@ export async function collectCashPayment(orderId: string, passkey: string): Prom
 
 /**
  * Real-Time subscription for Canteen Kitchen Staff Dashboard
- * Notifies immediately when new orders are placed or updated across all customers!
+ * Delivered only to authorized staff via Postgres RLS.
  */
 export function subscribeToAllOrders(
   onOrderChanged: (order: Order) => void,

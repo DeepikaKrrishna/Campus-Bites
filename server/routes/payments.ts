@@ -10,8 +10,9 @@ import {
   updateOrderRecord,
   savePaymentRecord,
   updatePaymentRecord,
-  appendStatusHistory,
+  getPaymentRecord,
 } from '../db'
+import { requireAuth } from '../auth'
 
 export const paymentsRouter = Router()
 
@@ -40,9 +41,9 @@ function genTokenNumber(): number {
  * 1. Create Payment Order
  * POST /api/payments/create-order
  */
-paymentsRouter.post('/create-order', async (req: Request, res: Response) => {
+paymentsRouter.post('/create-order', requireAuth, async (req: Request, res: Response) => {
   try {
-    const { userId, items, paymentMethod = 'upi', userEmail, userName } = req.body
+    const { items, paymentMethod = 'upi' } = req.body
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ success: false, error: 'Order items are required.' })
@@ -59,9 +60,10 @@ paymentsRouter.post('/create-order', async (req: Request, res: Response) => {
     const { validatedItems, subtotal, tax, packing, total, amountInPaise } = validation
     const orderNumber = genOrderNumber()
     const tokenNumber = genTokenNumber()
-    const etaMinutes = Math.min(25, Math.max(10, Math.round(subtotal / 30) + 8))
+    const itemCount = validatedItems.reduce((count, item) => count + item.quantity, 0)
+    const etaMinutes = Math.min(35, Math.max(10, 7 + itemCount * 3))
     const estimatedReadyAt = new Date(Date.now() + etaMinutes * 60 * 1000).toISOString()
-    const effectiveUserId = userId || 'demo-student'
+    const effectiveUserId = req.user!.id
 
     // 2. Persist order in resilient database
     const savedOrder = await saveOrder({
@@ -165,9 +167,9 @@ paymentsRouter.post('/create-order', async (req: Request, res: Response) => {
       isSimulator,
       etaMinutes,
     })
-  } catch (error: any) {
-    console.error('Error creating payment order:', error)
-    return res.status(500).json({ success: false, error: error.message || 'Internal server error' })
+  } catch (error: unknown) {
+    console.error('Error creating payment order:', error instanceof Error ? error.message : 'Unknown error')
+    return res.status(500).json({ success: false, error: 'Unable to create payment order. Please try again.' })
   }
 })
 
@@ -175,14 +177,13 @@ paymentsRouter.post('/create-order', async (req: Request, res: Response) => {
  * 2. Server-Side Payment Verification
  * POST /api/payments/verify
  */
-paymentsRouter.post('/verify', async (req: Request, res: Response) => {
+paymentsRouter.post('/verify', requireAuth, async (req: Request, res: Response) => {
   try {
     const {
       orderId,
       razorpayOrderId,
       razorpayPaymentId,
       razorpaySignature,
-      isSimulator = false,
     } = req.body
 
     if (!orderId || !razorpayOrderId || !razorpayPaymentId) {
@@ -192,9 +193,27 @@ paymentsRouter.post('/verify', async (req: Request, res: Response) => {
       })
     }
 
+    const order = await getOrderById(orderId)
+    if (!order || order.user_id !== req.user!.id) {
+      return res.status(404).json({ success: false, verified: false, error: 'Order not found.' })
+    }
+    const paymentRecord = await getPaymentRecord(razorpayOrderId)
+    if (
+      !paymentRecord ||
+      paymentRecord.order_id !== orderId ||
+      paymentRecord.user_id !== req.user!.id
+    ) {
+      return res.status(404).json({ success: false, verified: false, error: 'Payment order not found.' })
+    }
+
     let isValid = false
 
-    if (isRazorpayLiveConfigured() && !isSimulator) {
+    const trustedSimulator =
+      !isRazorpayLiveConfigured() &&
+      process.env.NODE_ENV !== 'production' &&
+      paymentRecord.gateway_order_id?.startsWith('order_test_')
+
+    if (!trustedSimulator) {
       // Official Razorpay HMAC-SHA256 verification
       const body = razorpayOrderId + '|' + razorpayPaymentId
       const expectedSignature = crypto
@@ -247,21 +266,13 @@ paymentsRouter.post('/verify', async (req: Request, res: Response) => {
       verified_at: nowIso,
     })
 
-    // 2. Update CampusBites Order record: payment_status = PAID, status = ACCEPTED
-    await updateOrderRecord(orderId, {
-      payment_status: 'PAID',
-      status: 'ACCEPTED',
-      stage: 1, // Advance to Accepted/Payment Confirmed stage
-    })
-
-    // 3. Record in order_status_history
-    await appendStatusHistory({
-      order_id: orderId,
-      previous_status: 'PLACED',
-      new_status: 'ACCEPTED',
-      actor_role: 'system',
-      status_note: `Payment verified via Razorpay (${razorpayPaymentId})`,
-    })
+    // Payment confirmation is separate from the staff-controlled kitchen lifecycle.
+    await updateOrderRecord(
+      orderId,
+      {
+        payment_status: 'PAID',
+      }
+    )
 
     return res.status(200).json({
       success: true,
@@ -269,12 +280,12 @@ paymentsRouter.post('/verify', async (req: Request, res: Response) => {
       orderId,
       paymentId: razorpayPaymentId,
       status: 'PAID',
-      orderStatus: 'ACCEPTED',
-      message: 'Payment verified successfully and order confirmed by kitchen ticket.',
+      orderStatus: 'PLACED',
+      message: 'Payment verified successfully. Your order is waiting for kitchen staff.',
     })
-  } catch (error: any) {
-    console.error('Error verifying payment:', error)
-    return res.status(500).json({ success: false, error: error.message || 'Verification failed' })
+  } catch (error: unknown) {
+    console.error('Error verifying payment:', error instanceof Error ? error.message : 'Unknown error')
+    return res.status(500).json({ success: false, error: 'Unable to verify payment. Please try again.' })
   }
 })
 
@@ -333,8 +344,6 @@ paymentsRouter.post('/webhook', async (req: Request, res: Response) => {
         if (campusOrderId) {
           await updateOrderRecord(campusOrderId, {
             payment_status: 'PAID',
-            status: 'ACCEPTED',
-            stage: 1,
           })
         }
       }

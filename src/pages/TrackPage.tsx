@@ -1,6 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import confetti from 'canvas-confetti'
-import { getOrders, rateOrder, cancelOrder, subscribeToOrder, type Order } from '../lib/orders'
+import {
+  getOrders,
+  fetchOrderById,
+  rateOrder,
+  cancelOrder,
+  subscribeToOrder,
+  type Order,
+} from '../lib/orders'
 import type { AppUser } from '../lib/auth'
 import type { Tab } from '../App'
 
@@ -65,6 +72,7 @@ const RATING_TAGS = [
 export default function TrackPage({ user, onTabChange, onReorder }: Props) {
   const [orders, setOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
 
   // Rating interactive state
   const [selectedRating, setSelectedRating] = useState<number>(5)
@@ -82,14 +90,19 @@ export default function TrackPage({ user, onTabChange, onReorder }: Props) {
   const prevStageRef = useRef<number>(-1)
 
   const loadOrders = useCallback(async () => {
-    const currentUserId = user?.id || 'demo-student'
-    const data = await getOrders(currentUserId)
-    setOrders(data)
-    setLoading(false)
-
-    if (data.length > 0 && data[0].rating) {
-      setSelectedRating(data[0].rating)
-      setRatingSubmitted(true)
+    try {
+      const currentUserId = user?.id || ''
+      const data = await getOrders(currentUserId)
+      setOrders(data)
+      setLoadError('')
+      if (data.length > 0 && data[0].rating) {
+        setSelectedRating(data[0].rating)
+        setRatingSubmitted(true)
+      }
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : 'Unable to load your orders.')
+    } finally {
+      setLoading(false)
     }
   }, [user])
 
@@ -103,6 +116,11 @@ export default function TrackPage({ user, onTabChange, onReorder }: Props) {
     const activeOrder = orders[0]
     const unsub = subscribeToOrder(activeOrder.id, (updated) => {
       setOrders((prev) => prev.map((o) => (o.id === updated.id ? updated : o)))
+      fetchOrderById(activeOrder.id).then((fresh) => {
+        if (fresh) {
+          setOrders((prev) => prev.map((o) => (o.id === fresh.id ? fresh : o)))
+        }
+      })
 
       // If stage reached ready for pickup (stage 3) or completed (stage 4), fire celebration confetti!
       if (updated.stage >= 3 && prevStageRef.current < 3) {
@@ -224,20 +242,22 @@ export default function TrackPage({ user, onTabChange, onReorder }: Props) {
         <h1 style={{ fontSize: 22, fontWeight: 800, margin: '0 0 4px', color: '#0f172a' }}>
           Track Your Order
         </h1>
-        <p style={{ fontSize: 13, color: '#64748b', margin: '0 0 48px' }}>
-          Live kitchen preparation updates
+        <p style={{ fontSize: 13, color: loadError ? '#b91c1c' : '#64748b', margin: '0 0 48px' }}>
+          {loadError || 'Live kitchen preparation updates'}
         </p>
 
         <div style={{ fontSize: 60, marginBottom: 16 }}>🥡</div>
         <p style={{ fontSize: 17, fontWeight: 800, color: '#0f172a', marginBottom: 8 }}>
-          No Active Orders
+          {loadError ? 'Orders Unavailable' : 'No Active Orders'}
         </p>
         <p style={{ fontSize: 13, color: '#64748b', maxWidth: 280, margin: '0 auto 24px' }}>
-          When you place a food order from the menu or cart, you will see its step-by-step preparation here!
+          {loadError
+            ? 'Check your connection and try again.'
+            : 'When you place a food order from the menu or cart, you will see its step-by-step preparation here!'}
         </p>
 
         <button
-          onClick={() => onTabChange?.('menu')}
+          onClick={() => (loadError ? loadOrders() : onTabChange?.('menu'))}
           style={{
             padding: '12px 28px',
             borderRadius: 14,
@@ -250,7 +270,7 @@ export default function TrackPage({ user, onTabChange, onReorder }: Props) {
             cursor: 'pointer',
           }}
         >
-          Browse Menu Now →
+          {loadError ? 'Try Again' : 'Browse Menu Now →'}
         </button>
       </div>
     )
@@ -259,7 +279,7 @@ export default function TrackPage({ user, onTabChange, onReorder }: Props) {
   const isCancelled = activeOrder.status === 'CANCELLED' || activeOrder.stage === -1
   const isReady = activeOrder.status === 'READY_FOR_PICKUP' || activeOrder.stage === 3
   const isCompleted = activeOrder.status === 'PICKED_UP' || activeOrder.stage >= 4
-  const canCancel = (activeOrder.status === 'PLACED' || activeOrder.status === 'ACCEPTED') && !isCancelled
+  const canCancel = activeOrder.status === 'PLACED' && !isCancelled
   const formattedMinutes = Math.floor(remainingSecs / 60)
   const formattedSeconds = remainingSecs % 60
 
@@ -415,6 +435,13 @@ export default function TrackPage({ user, onTabChange, onReorder }: Props) {
             const isCurrent = activeOrder.stage === s.stage
             const isPending = activeOrder.stage < s.stage
             const isLast = idx === STAGES.length - 1
+            const stageTimestamp = [
+              activeOrder.created_at,
+              activeOrder.accepted_at,
+              activeOrder.preparing_at,
+              activeOrder.ready_at,
+              activeOrder.picked_up_at,
+            ][idx]
 
             return (
               <div
@@ -491,7 +518,9 @@ export default function TrackPage({ user, onTabChange, onReorder }: Props) {
                         color: isCurrent ? '#0284c7' : '#94a3b8',
                       }}
                     >
-                      {s.duration}
+                      {stageTimestamp && (isCompleted || isCurrent)
+                        ? new Date(stageTimestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                        : s.duration}
                     </span>
                   </div>
                   <p

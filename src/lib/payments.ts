@@ -1,4 +1,4 @@
-import type { AppUser } from './auth'
+import { type AppUser, getAuthHeaders } from './auth'
 import type { CartItem } from '../App'
 
 declare global {
@@ -78,11 +78,10 @@ export async function createBackendPaymentOrder(
     paymentMethod,
   }
 
+  const headers = await getAuthHeaders()
   const response = await fetch('/api/payments/create-order', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers,
     body: JSON.stringify(payload),
   })
 
@@ -104,11 +103,10 @@ export async function verifyPaymentOnBackend(params: {
   razorpaySignature: string
   isSimulator?: boolean
 }): Promise<VerifyPaymentResponse> {
+  const headers = await getAuthHeaders()
   const response = await fetch('/api/payments/verify', {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers,
     body: JSON.stringify(params),
   })
 

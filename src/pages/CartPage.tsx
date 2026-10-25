@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { placeOrder as placeOrderBackend, type Order } from '../lib/orders'
+import { fetchOrderById, type Order } from '../lib/orders'
 import { createBackendPaymentOrder, verifyPaymentOnBackend } from '../lib/payments'
 import type { AppUser } from '../lib/auth'
 import type { CartItem, Tab } from '../App'
@@ -143,9 +143,10 @@ export default function CartPage({
       // 1. Authoritative Backend Payment Order Creation
       const paymentOrderRes = await createBackendPaymentOrder(currentUser, cart, method)
 
-      // 2. If Cash payment, order is already created in database as PENDING
+      // The payment endpoint already persists the order, including cash orders.
       if (method === 'cash') {
-        const placedOrder = await placeOrderBackend(currentUser, cart as any, 'cash', meta)
+        const placedOrder = await fetchOrderById(paymentOrderRes.orderId)
+        if (!placedOrder) throw new Error('Your order was created but could not be loaded. Please refresh your orders.')
         setShowUpiModal(false)
         onOrderPlaced(placedOrder)
         onTabChange('track')
@@ -168,32 +169,11 @@ export default function CartPage({
         throw new Error(verifyRes.error || 'Payment verification failed on server.')
       }
 
-      // Close modal and navigate to live tracking
-      setShowUpiModal(false)
-      const placedOrder: Order = {
-        id: paymentOrderRes.orderId,
-        order_number: paymentOrderRes.orderNumber,
-        token_number: paymentOrderRes.tokenNumber,
-        items: cart.map((c) => ({
-          id: c.id,
-          name: c.name,
-          price: c.price,
-          quantity: c.quantity,
-          image: c.image,
-        })),
-        subtotal,
-        tax,
-        packing,
-        total,
-        payment: method,
-        payment_status: 'PAID',
-        status: 'ACCEPTED',
-        stage: 1,
-        rating: null,
-        eta_minutes: paymentOrderRes.etaMinutes || 15,
-        created_at: new Date().toISOString(),
-      }
+      const placedOrder = await fetchOrderById(paymentOrderRes.orderId)
+      if (!placedOrder) throw new Error('Payment was verified, but the saved order could not be loaded. Please refresh your orders.')
 
+      // Show the persisted order; only staff can advance its kitchen status.
+      setShowUpiModal(false)
       onOrderPlaced(placedOrder)
       onTabChange('track')
     } catch (err: any) {

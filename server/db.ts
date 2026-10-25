@@ -21,39 +21,22 @@ export type TrustedMenuItem = {
   category: string
 }
 
-// Fallback trusted menu catalogue in case database table is being created
-export const fallbackMenuItems: TrustedMenuItem[] = [
-  { id: 1, name: 'Hot & Cheesy Omelette', price: 70, available: true, category: 'Breakfast' },
-  { id: 2, name: 'Masala Dosa', price: 60, available: true, category: 'Breakfast' },
-  { id: 3, name: 'Idli Sambar', price: 45, available: true, category: 'Breakfast' },
-  { id: 4, name: 'Filter Coffee', price: 25, available: true, category: 'Snacks' },
-  { id: 5, name: 'Chicken Biryani', price: 160, available: true, category: 'Lunch' },
-  { id: 6, name: 'Paneer Butter Masala', price: 150, available: true, category: 'Lunch' },
-  { id: 7, name: 'Cheese Burger', price: 130, available: true, category: 'Snacks' },
-  { id: 8, name: 'Chicken Burger', price: 120, available: true, category: 'Snacks' },
-  { id: 9, name: 'Grilled Veg Sandwich', price: 55, available: true, category: 'Snacks' },
-]
-
 export async function getAuthoritativeMenu(): Promise<TrustedMenuItem[]> {
-  try {
-    const { data, error } = await supabase
-      .from('menu_items')
-      .select('id, name, price, available, category')
-      .order('id')
-
-    if (!error && data && data.length > 0) {
-      return data.map((d: any) => ({
-        id: Number(d.id),
-        name: d.name,
-        price: Number(d.price),
-        available: Boolean(d.available),
-        category: d.category,
-      }))
-    }
-  } catch (err) {
-    console.warn('Could not fetch menu from database, using verified catalogue:', err)
+  const { data, error } = await supabase
+    .from('menu_items')
+    .select('id, name, price, available, category')
+    .order('id')
+  if (error || !data?.length) {
+    console.error('Authoritative menu could not be loaded:', error?.message || 'No menu rows found')
+    throw new Error('The canteen menu is temporarily unavailable. Please try again.')
   }
-  return fallbackMenuItems
+  return data.map((d: any) => ({
+    id: Number(d.id),
+    name: d.name,
+    price: Number(d.price),
+    available: Boolean(d.available),
+    category: d.category,
+  }))
 }
 
 export function validateCartAndCalculateTotals(
@@ -170,12 +153,8 @@ export function validateCartAndCalculateTotals(
 }
 
 // ==============================================================================
-// RESILIENT REPOSITORY LAYER (Supabase with High-Availability In-Memory Store)
+// Supabase is the authoritative order and payment store.
 // ==============================================================================
-
-const inMemoryOrders = new Map<string, any>()
-const inMemoryPayments = new Map<string, any>()
-const inMemoryStatusHistory = new Map<string, any[]>()
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -183,171 +162,176 @@ function isUuid(val: string): boolean {
   return typeof val === 'string' && UUID_REGEX.test(val)
 }
 
-export async function saveOrder(orderPayload: any): Promise<any> {
-  const id = orderPayload.id || ('cb-' + Date.now() + '-' + Math.random().toString(36).slice(2, 6))
-  const now = new Date().toISOString()
 
-  const normalizedOrder = {
+export async function saveOrder(orderPayload: any): Promise<any> {
+  // Require a valid authenticated Supabase customer ID.
+  if (!isUuid(orderPayload?.user_id)) {
+    throw new Error('A valid authenticated customer ID is required.')
+  }
+
+  // Validate and parse order items.
+  let items: any
+
+  try {
+    items =
+      typeof orderPayload.items === 'string'
+        ? JSON.parse(orderPayload.items)
+        : orderPayload.items
+  } catch {
+    throw new Error('Order items contain invalid JSON.')
+  }
+
+  if (!Array.isArray(items) || items.length === 0) {
+    throw new Error('Cannot save an order without valid items.')
+  }
+
+  // Use a UUID for the order ID.
+  const id = orderPayload.id || crypto.randomUUID()
+
+  if (!isUuid(id)) {
+    throw new Error('Order ID must be a valid UUID.')
+  }
+
+  const payload = {
     ...orderPayload,
     id,
-    created_at: orderPayload.created_at || now,
-    updated_at: now,
-    items: typeof orderPayload.items === 'string' ? JSON.parse(orderPayload.items) : orderPayload.items,
+    items,
+    updated_at: new Date().toISOString(),
   }
 
-  // Always store in memory for guaranteed zero-downtime availability
-  inMemoryOrders.set(id, normalizedOrder)
+  // Supabase is the source of truth.
+  // Do not silently return an in-memory order if persistence fails.
+  const { data, error } = await supabase.rpc('create_order_with_items', {
+    p_order: payload,
+    p_items: items,
+  })
 
-  // Try saving to Supabase if UUID format is valid
-  try {
-    const supabasePayload = {
-      ...orderPayload,
-      id: isUuid(id) ? id : undefined,
-      user_id: isUuid(orderPayload.user_id) ? orderPayload.user_id : '3e5d785b-c8fe-41f4-800b-4a4d8e24d075',
-      items: typeof orderPayload.items === 'string' ? orderPayload.items : JSON.stringify(orderPayload.items),
-    }
+  if (error) {
+    console.error('Order persistence failed:', {
+      code: error.code,
+      message: error.message,
+    })
 
-    const { data, error } = await supabase.from('orders').insert(supabasePayload).select().single()
-    if (!error && data) {
-      const synched = {
-        ...data,
-        items: typeof data.items === 'string' ? JSON.parse(data.items) : data.items,
-      }
-      inMemoryOrders.set(data.id, synched)
-      inMemoryOrders.set(id, synched)
-      return synched
-    }
-  } catch (e) {
-    // Supabase error is caught and fallback to in-memory record is returned
+    throw new Error('Your order could not be saved. Please try again.')
   }
 
-  return normalizedOrder
+  if (!data) {
+    throw new Error('The database did not return the saved order.')
+  }
+
+  const persisted = parseOrderRow(Array.isArray(data) ? data[0] : data)
+  if (!persisted) throw new Error('The database did not return the saved order.')
+
+  return persisted
+}
+
+function parseOrderRow(data: any): any {
+  return {
+    ...data,
+    items: typeof data.items === 'string' ? JSON.parse(data.items) : data.items,
+  }
 }
 
 export async function getOrderById(id: string): Promise<any | null> {
-  if (inMemoryOrders.has(id)) {
-    return inMemoryOrders.get(id)
+  const { data, error } = await supabase.from('orders').select('*').eq('id', id).maybeSingle()
+  if (!error && data) {
+    const order = parseOrderRow(data)
+    return order
   }
 
-  try {
-    const { data, error } = await supabase.from('orders').select('*').eq('id', id).single()
-    if (!error && data) {
-      const order = {
-        ...data,
-        items: typeof data.items === 'string' ? JSON.parse(data.items) : data.items,
-      }
-      inMemoryOrders.set(data.id, order)
-      return order
-    }
-  } catch (e) {}
-
+  if (error) throw new Error('Order could not be loaded from the database.')
   return null
 }
 
-export async function updateOrderRecord(id: string, updates: any): Promise<any | null> {
+export async function updateOrderRecord(
+  id: string,
+  updates: any
+): Promise<any | null> {
   const existing = await getOrderById(id)
   if (!existing) return null
 
   const now = new Date().toISOString()
-  const updated = {
-    ...existing,
-    ...updates,
-    updated_at: now,
+  const supabaseUpdates = { ...updates, updated_at: now }
+  if (supabaseUpdates.items && typeof supabaseUpdates.items !== 'string') {
+    supabaseUpdates.items = JSON.stringify(supabaseUpdates.items)
   }
 
-  inMemoryOrders.set(id, updated)
+  const { data, error } = await supabase
+    .from('orders')
+    .update(supabaseUpdates)
+    .eq('id', id)
+    .select()
+    .maybeSingle()
 
-  // Update in Supabase if possible
-  try {
-    const supabaseUpdates = { ...updates, updated_at: now }
-    if (supabaseUpdates.items && typeof supabaseUpdates.items !== 'string') {
-      supabaseUpdates.items = JSON.stringify(supabaseUpdates.items)
-    }
-    await supabase.from('orders').update(supabaseUpdates).eq('id', id)
-  } catch (e) {}
+  if (error || !data) {
+    console.error('Order update persistence failed:', error?.message || 'No updated order returned')
+    throw new Error('Order update could not be saved.')
+  }
+  return parseOrderRow(data)
+}
 
-  return updated
+export type TransitionOrderResult =
+  | { ok: true; order: any }
+  | { ok: false; code: 'NOT_FOUND' | 'CONFLICT' | 'DB_ERROR'; message?: string }
+
+/**
+ * Atomically transition order status when the row still matches expectedStatus.
+ */
+export async function transitionOrderStatus(input: {
+  orderId: string
+  expectedStatus: string
+  newStatus: string
+  updates?: Record<string, unknown>
+  history: {
+    previous_status: string
+    new_status: string
+    actor_id?: string
+    actor_role: string
+    status_note?: string
+  }
+}): Promise<TransitionOrderResult> {
+  const { data, error } = await supabase.rpc('transition_order_status', {
+    p_order_id: input.orderId,
+    p_expected_status: input.expectedStatus,
+    p_new_status: input.newStatus,
+    p_actor_id: input.history.actor_id || null,
+    p_actor_role: input.history.actor_role,
+    p_note: input.history.status_note || null,
+    p_updates: input.updates || {},
+  })
+
+  if (error) {
+    console.error('transitionOrderStatus DB error:', error.message)
+    if (error.message.includes('ORDER_CONFLICT')) return { ok: false, code: 'CONFLICT' }
+    if (error.message.includes('ORDER_NOT_FOUND')) return { ok: false, code: 'NOT_FOUND' }
+    return { ok: false, code: 'DB_ERROR', message: error.message }
+  }
+
+  if (!data) return { ok: false, code: 'NOT_FOUND' }
+
+  const order = parseOrderRow(Array.isArray(data) ? data[0] : data)
+  if (!order) return { ok: false, code: 'NOT_FOUND' }
+  return { ok: true, order }
 }
 
 export async function getUserOrdersList(userId: string): Promise<any[]> {
-  const userOrders: any[] = []
-  const seenIds = new Set<string>()
-
-  // 1. Gather from memory
-  for (const order of inMemoryOrders.values()) {
-    if (order.user_id === userId || (userId.startsWith('demo-') && String(order.user_id).startsWith('demo-'))) {
-      if (!seenIds.has(order.id)) {
-        seenIds.add(order.id)
-        userOrders.push(order)
-      }
-    }
-  }
-
-  // 2. Gather from Supabase
-  try {
-    const effectiveId = isUuid(userId) ? userId : '3e5d785b-c8fe-41f4-800b-4a4d8e24d075'
-    const { data, error } = await supabase
-      .from('orders')
-      .select('*')
-      .eq('user_id', effectiveId)
-      .order('created_at', { ascending: false })
-      .limit(30)
-
-    if (!error && data) {
-      for (const row of data) {
-        if (!seenIds.has(row.id)) {
-          seenIds.add(row.id)
-          userOrders.push({
-            ...row,
-            items: typeof row.items === 'string' ? JSON.parse(row.items) : row.items,
-          })
-        }
-      }
-    }
-  } catch (e) {}
-
-  return userOrders.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+  if (!isUuid(userId)) throw new Error('A valid authenticated customer ID is required.')
+  const { data, error } = await supabase
+    .from('orders')
+    .select('*')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(30)
+  if (error) throw new Error('Orders could not be loaded from the database.')
+  return (data || []).map(parseOrderRow)
 }
 
 export async function getStaffOrdersList(statusFilter?: string, limit: number = 50): Promise<any[]> {
-  const list: any[] = []
-  const seenIds = new Set<string>()
-
-  // 1. In-memory orders
-  for (const order of inMemoryOrders.values()) {
-    if (!seenIds.has(order.id)) {
-      seenIds.add(order.id)
-      list.push(order)
-    }
-  }
-
-  // 2. Supabase orders
-  try {
-    const { data, error } = await supabase
-      .from('orders')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(limit)
-
-    if (!error && data) {
-      for (const row of data) {
-        if (!seenIds.has(row.id)) {
-          seenIds.add(row.id)
-          list.push({
-            ...row,
-            items: typeof row.items === 'string' ? JSON.parse(row.items) : row.items,
-          })
-        }
-      }
-    }
-  } catch (e) {}
-
-  let filtered = list.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-  if (statusFilter && statusFilter !== 'ALL') {
-    filtered = filtered.filter((o) => o.status === statusFilter)
-  }
-
-  return filtered.slice(0, limit)
+  let query = supabase.from('orders').select('*').order('created_at', { ascending: false })
+  if (statusFilter && statusFilter !== 'ALL') query = query.eq('status', statusFilter)
+  const { data, error } = await query.limit(Math.min(Math.max(limit, 1), 200))
+  if (error) throw new Error('Staff orders could not be loaded from the database.')
+  return (data || []).map(parseOrderRow)
 }
 
 export async function getStaffOrderStats(): Promise<{
@@ -393,44 +377,33 @@ export async function savePaymentRecord(payment: any): Promise<any> {
     created_at: new Date().toISOString(),
   }
 
-  inMemoryPayments.set(record.gateway_order_id || record.order_id || id, record)
-
-  try {
-    await supabase.from('payments').insert({
-      ...payment,
-      user_id: isUuid(payment.user_id) ? payment.user_id : '3e5d785b-c8fe-41f4-800b-4a4d8e24d075',
-    })
-  } catch (e) {}
-
-  return record
+  const { data, error } = await supabase
+    .from('payments')
+    .insert(payment)
+    .select()
+    .single()
+  if (error || !data) throw new Error('Payment record could not be saved.')
+  return data
 }
 
 export async function updatePaymentRecord(gatewayOrderId: string, updates: any): Promise<any> {
-  let record = inMemoryPayments.get(gatewayOrderId)
-  if (record) {
-    record = { ...record, ...updates, updated_at: new Date().toISOString() }
-    inMemoryPayments.set(gatewayOrderId, record)
-  }
-
-  try {
-    await supabase.from('payments').update(updates).eq('gateway_order_id', gatewayOrderId)
-  } catch (e) {}
-
-  return record
+  const { data, error } = await supabase
+    .from('payments')
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq('gateway_order_id', gatewayOrderId)
+    .select()
+    .maybeSingle()
+  if (error || !data) throw new Error('Payment record could not be updated.')
+  return data
 }
 
-export async function appendStatusHistory(entry: {
-  order_id: string
-  previous_status: string
-  new_status: string
-  actor_role: string
-  status_note?: string
-}): Promise<void> {
-  const list = inMemoryStatusHistory.get(entry.order_id) || []
-  list.push({ ...entry, created_at: new Date().toISOString() })
-  inMemoryStatusHistory.set(entry.order_id, list)
-
-  try {
-    await supabase.from('order_status_history').insert(entry)
-  } catch (e) {}
+export async function getPaymentRecord(gatewayOrderId: string): Promise<any | null> {
+  const { data, error } = await supabase
+    .from('payments')
+    .select('*')
+    .eq('gateway_order_id', gatewayOrderId)
+    .maybeSingle()
+  if (error) throw new Error('Payment record could not be loaded.')
+  return data
 }
+

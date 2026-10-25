@@ -6,10 +6,7 @@ import {
   updateStaffOrderStatus,
   collectCashPayment,
   subscribeToAllOrders,
-  getStoredStaffPasskey,
-  saveStoredStaffPasskey,
-  clearStoredStaffPasskey,
-  verifyStaffPasskey,
+  verifyStaffRole,
 } from '../lib/staff'
 
 type Props = {
@@ -27,11 +24,16 @@ const TABS: Array<{ key: string; label: string; countKey?: string }> = [
 ]
 
 export default function StaffDashboard({ onBackToCustomer }: Props) {
-  const [passkey, setPasskey] = useState<string>(getStoredStaffPasskey() || '')
-  const [isAuthorized, setIsAuthorized] = useState<boolean>(Boolean(getStoredStaffPasskey()))
-  const [passkeyInput, setPasskeyInput] = useState('CAMPUS_CHEF_2026')
+  const [isAuthorized, setIsAuthorized] = useState<boolean>(false)
   const [authError, setAuthError] = useState('')
   const [verifyingAuth, setVerifyingAuth] = useState(false)
+
+  // Verify staff role against backend on mount
+  useEffect(() => {
+    verifyStaffRole().then((ok) => {
+      if (ok) setIsAuthorized(true)
+    })
+  }, [])
 
   // Orders State
   const [orders, setOrders] = useState<Order[]>([])
@@ -84,9 +86,11 @@ export default function StaffDashboard({ onBackToCustomer }: Props) {
       ])
       setOrders(fetchedOrders)
       setStats(fetchedStats)
+      setActionError(null)
       setLoading(false)
     } catch (err) {
       console.warn('Error fetching staff data:', err)
+      setActionError(err instanceof Error ? err.message : 'Unable to load staff orders. Please try again.')
       setLoading(false)
     }
   }, [selectedTab])
@@ -131,13 +135,12 @@ export default function StaffDashboard({ onBackToCustomer }: Props) {
     e.preventDefault()
     setVerifyingAuth(true)
     setAuthError('')
-    const ok = await verifyStaffPasskey(passkeyInput.trim())
+    const ok = await verifyStaffRole()
     setVerifyingAuth(false)
     if (ok) {
-      setPasskey(passkeyInput.trim())
       setIsAuthorized(true)
     } else {
-      setAuthError('Invalid canteen passkey. Hint: Use default "CAMPUS_CHEF_2026"')
+      setAuthError('Unauthorized: Your active session does not have staff permissions. Please sign in with an authorized canteen staff account (e.g. staff.canteen@campusbites.edu).')
     }
   }
 
@@ -146,7 +149,7 @@ export default function StaffDashboard({ onBackToCustomer }: Props) {
     setBusyOrderId(orderId)
     setActionError(null)
     try {
-      const updated = await updateStaffOrderStatus(orderId, nextStatus, passkey)
+      const updated = await updateStaffOrderStatus(orderId, nextStatus)
       setOrders((prev) => prev.map((o) => (o.id === orderId ? updated : o)))
       await fetchStaffStats().then(setStats)
     } catch (err: any) {
@@ -161,7 +164,7 @@ export default function StaffDashboard({ onBackToCustomer }: Props) {
     setBusyOrderId(orderId)
     setActionError(null)
     try {
-      await collectCashPayment(orderId, passkey)
+      await collectCashPayment(orderId)
       setOrders((prev) =>
         prev.map((o) => (o.id === orderId ? { ...o, payment_status: 'PAID' } : o))
       )
@@ -180,7 +183,7 @@ export default function StaffDashboard({ onBackToCustomer }: Props) {
       const updated = await updateStaffOrderStatus(
         cancelModalOrderId,
         'CANCELLED',
-        passkey,
+        undefined,
         cancellationReason
       )
       setOrders((prev) => prev.map((o) => (o.id === cancelModalOrderId ? updated : o)))
@@ -241,35 +244,14 @@ export default function StaffDashboard({ onBackToCustomer }: Props) {
           <h2 style={{ fontSize: 22, fontWeight: 800, margin: '0 0 6px', color: '#f8fafc' }}>
             Canteen Staff Portal
           </h2>
-          <p style={{ fontSize: 13, color: '#94a3b8', margin: '0 0 24px', lineHeight: 1.4 }}>
-            Enter your canteen staff secret passkey to access live order dispatch and kitchen controls.
+          <p style={{ fontSize: 13, color: '#94a3b8', margin: '0 0 20px', lineHeight: 1.4 }}>
+            Verified staff authorization is required to access live kitchen order dispatch and queue controls.
           </p>
 
           <form onSubmit={handleVerifyPasskey}>
             <div style={{ textAlign: 'left', marginBottom: 16 }}>
-              <label style={{ fontSize: 11, fontWeight: 700, color: '#cbd5e1', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                Staff Access Passkey
-              </label>
-              <input
-                type="password"
-                value={passkeyInput}
-                onChange={(e) => setPasskeyInput(e.target.value)}
-                placeholder="Enter passkey"
-                style={{
-                  width: '100%',
-                  marginTop: 6,
-                  padding: '12px 14px',
-                  borderRadius: 12,
-                  background: 'rgba(15, 23, 42, 0.7)',
-                  border: '1.5px solid #334155',
-                  color: '#ffffff',
-                  fontSize: 14,
-                  fontWeight: 600,
-                  outline: 'none',
-                }}
-              />
-              <span style={{ fontSize: 11, color: '#10b981', display: 'block', marginTop: 4 }}>
-                Default passkey: <code>CAMPUS_CHEF_2026</code>
+              <span style={{ fontSize: 12, color: '#94a3b8', display: 'block', marginBottom: 6 }}>
+                Sign in with your canteen staff account (e.g. <code>staff.canteen@campusbites.edu</code>) to manage orders.
               </span>
             </div>
 
@@ -408,7 +390,6 @@ export default function StaffDashboard({ onBackToCustomer }: Props) {
           </button>
           <button
             onClick={() => {
-              clearStoredStaffPasskey()
               setIsAuthorized(false)
               onBackToCustomer()
             }}
