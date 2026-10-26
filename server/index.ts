@@ -64,8 +64,8 @@ app.get('/api/health', async (_req: Request, res: Response) => {
   })
 })
 
-// 5. Start standalone server if invoked directly
-if (process.env.NODE_ENV !== 'test') {
+// 5. Start standalone server if invoked directly (never in serverless/Vercel)
+if (process.env.NODE_ENV !== 'test' && !process.env.VERCEL) {
   app.listen(config.port, () => {
     console.log(`[CampusBites API] Server running on http://localhost:${config.port}`)
     const paymentMode = isRazorpayLiveConfigured()
