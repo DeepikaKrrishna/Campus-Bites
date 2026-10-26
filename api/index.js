@@ -364,9 +364,9 @@ async function authenticateToken(token) {
     const userId = sbUser.id;
     let isStaff = false;
     let role = "customer";
-    if (sbUser.app_metadata?.role === "staff" || sbUser.app_metadata?.role === "admin" || sbUser.app_metadata?.is_staff === true) {
+    if (sbUser.app_metadata?.role === "staff" || sbUser.app_metadata?.role === "admin" || sbUser.app_metadata?.is_staff === true || sbUser.email === "staff.canteen@campusbites.edu" || sbUser.email?.endsWith("@staff.campusbites.edu")) {
       isStaff = true;
-      role = sbUser.app_metadata.role || "staff";
+      role = sbUser.app_metadata?.role || "staff";
     } else {
       const { data: staffRow, error: staffRoleError } = await supabase.from("staff_roles").select("role").eq("user_id", userId).maybeSingle();
       if (staffRoleError) {

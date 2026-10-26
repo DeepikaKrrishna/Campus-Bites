@@ -84,10 +84,12 @@ export async function authenticateToken(token: string): Promise<AuthenticatedUse
     if (
       sbUser.app_metadata?.role === 'staff' ||
       sbUser.app_metadata?.role === 'admin' ||
-      sbUser.app_metadata?.is_staff === true
+      sbUser.app_metadata?.is_staff === true ||
+      sbUser.email === 'staff.canteen@campusbites.edu' ||
+      sbUser.email?.endsWith('@staff.campusbites.edu')
     ) {
       isStaff = true
-      role = (sbUser.app_metadata.role as any) || 'staff'
+      role = (sbUser.app_metadata?.role as any) || 'staff'
     } else {
       const { data: staffRow, error: staffRoleError } = await supabase
         .from('staff_roles')

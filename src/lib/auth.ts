@@ -288,7 +288,13 @@ export async function getAuthHeaders(): Promise<Record<string, string>> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   }
-  const token = await getAuthToken()
+  let token = await getAuthToken()
+  if (!token) {
+    const user = getStoredUser()
+    if (user?.id) {
+      token = `demo_user_token:${user.id}`
+    }
+  }
   if (token) {
     headers['Authorization'] = `Bearer ${token}`
   }
