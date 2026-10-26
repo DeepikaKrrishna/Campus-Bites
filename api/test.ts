@@ -11,7 +11,7 @@ export default async function handler(_req: any, res: any) {
 
   try {
     diagnostics.config = 'attempting'
-    const configModule = await import('../server/config')
+    const configModule = await import('./server/config')
     diagnostics.config = { loaded: true, nodeEnv: configModule.config.nodeEnv }
   } catch (e: any) {
     diagnostics.config = 'FAILED: ' + e?.message
@@ -19,7 +19,7 @@ export default async function handler(_req: any, res: any) {
 
   try {
     diagnostics.db = 'attempting'
-    const dbModule = await import('../server/db')
+    const dbModule = await import('./server/db')
     diagnostics.db = { loaded: true, hasSupabase: Boolean(dbModule.supabase) }
   } catch (e: any) {
     diagnostics.db = 'FAILED: ' + e?.message
@@ -27,7 +27,7 @@ export default async function handler(_req: any, res: any) {
 
   try {
     diagnostics.auth = 'attempting'
-    const authModule = await import('../server/auth')
+    const authModule = await import('./server/auth')
     diagnostics.auth = { loaded: true, hasAuth: Boolean(authModule.authenticateToken) }
   } catch (e: any) {
     diagnostics.auth = 'FAILED: ' + e?.message
@@ -35,7 +35,7 @@ export default async function handler(_req: any, res: any) {
 
   try {
     diagnostics.paymentsRoute = 'attempting'
-    const paymentsModule = await import('../server/routes/payments')
+    const paymentsModule = await import('./server/routes/payments')
     diagnostics.paymentsRoute = { loaded: true, hasRouter: Boolean(paymentsModule.paymentsRouter) }
   } catch (e: any) {
     diagnostics.paymentsRoute = 'FAILED: ' + e?.message
@@ -43,7 +43,7 @@ export default async function handler(_req: any, res: any) {
 
   try {
     diagnostics.ordersRoute = 'attempting'
-    const ordersModule = await import('../server/routes/orders')
+    const ordersModule = await import('./server/routes/orders')
     diagnostics.ordersRoute = { loaded: true, hasRouter: Boolean(ordersModule.ordersRouter) }
   } catch (e: any) {
     diagnostics.ordersRoute = 'FAILED: ' + e?.message
@@ -51,7 +51,7 @@ export default async function handler(_req: any, res: any) {
 
   try {
     diagnostics.staffRoute = 'attempting'
-    const staffModule = await import('../server/routes/staff')
+    const staffModule = await import('./server/routes/staff')
     diagnostics.staffRoute = { loaded: true, hasRouter: Boolean(staffModule.staffRouter) }
   } catch (e: any) {
     diagnostics.staffRoute = 'FAILED: ' + e?.message
@@ -59,7 +59,7 @@ export default async function handler(_req: any, res: any) {
 
   try {
     diagnostics.serverIndex = 'attempting'
-    const serverModule = await import('../server/index')
+    const serverModule = await import('./server/index')
     diagnostics.serverIndex = { loaded: true, hasApp: Boolean(serverModule.app) }
   } catch (e: any) {
     diagnostics.serverIndex = 'FAILED: ' + e?.message
