@@ -83,3 +83,5 @@ console.log(`[CampusBites API] Payment Mode: ${paymentMode}`)
     console.log(`[CampusBites API] Supabase connected to: ${config.supabase.url}`)
   })
 }
+
+export default app
