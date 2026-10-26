@@ -44,19 +44,33 @@ export default function App() {
   const [cart, setCart] = useState<CartItem[]>(loadSavedCart)
   const [loading, setLoading] = useState(true)
 
-  // Restore user session on mount and listen to Google OAuth callbacks
+  // Restore user session on mount with safety timeout
   useEffect(() => {
-    restoreSession().then((u) => {
-      if (u) setUser(u)
-      setLoading(false)
-    })
+    let mounted = true
+    const safetyTimeout = setTimeout(() => {
+      if (mounted) setLoading(false)
+    }, 2500)
+
+    restoreSession()
+      .then((u) => {
+        if (!mounted) return
+        if (u) setUser(u)
+        setLoading(false)
+      })
+      .catch((err) => {
+        console.warn('Session restoration failed:', err)
+        if (mounted) setLoading(false)
+      })
 
     const unsubscribe = onAuthStateChange((u) => {
+      if (!mounted) return
       if (u) setUser(u)
       setLoading(false)
     })
 
     return () => {
+      mounted = false
+      clearTimeout(safetyTimeout)
       unsubscribe()
     }
   }, [])

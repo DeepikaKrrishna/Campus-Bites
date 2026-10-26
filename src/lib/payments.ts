@@ -84,11 +84,29 @@ export function loadRazorpayScript(): Promise<boolean> {
       return
     }
 
+    // Remove any previously-failed script tags so a fresh retry can succeed
+    const existing = document.querySelector<HTMLScriptElement>(
+      'script[src*="checkout.razorpay.com"]'
+    )
+    if (existing) existing.remove()
+
     const script = document.createElement('script')
     script.src = 'https://checkout.razorpay.com/v1/checkout.js'
     script.async = true
-    script.onload = () => resolve(true)
+
+    // Timeout after 15 seconds so the UI doesn't hang forever
+    const timer = setTimeout(() => {
+      script.onload = script.onerror = null
+      console.warn('Razorpay Checkout script timed out after 15 s.')
+      resolve(false)
+    }, 15_000)
+
+    script.onload = () => {
+      clearTimeout(timer)
+      resolve(true)
+    }
     script.onerror = () => {
+      clearTimeout(timer)
       console.warn('Failed to load Razorpay Checkout script from CDN.')
       resolve(false)
     }
