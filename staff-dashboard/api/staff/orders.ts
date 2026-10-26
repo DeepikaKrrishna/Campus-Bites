@@ -15,6 +15,7 @@ type ApiResponse = {
 }
 
 type StaffIdentity = { user: User; role: 'staff' | 'admin' }
+const STAFF_DASHBOARD_EMAIL = 'staff.canteen@campusbites.edu'
 
 const transitions: Record<string, string[]> = {
   PLACED: ['ACCEPTED', 'CANCELLED'],
@@ -41,29 +42,39 @@ function getBearerToken(req: ApiRequest): string | null {
   return match?.[1] || null
 }
 
-async function verifyStaff(client: SupabaseClient, token: string): Promise<StaffIdentity | null> {
+async function verifyStaff(
+  client: SupabaseClient,
+  token: string
+): Promise<{ staff: StaffIdentity | null; userId: string | null; denial?: 'account' | 'role' | 'session' }> {
   if (process.env.NODE_ENV !== 'production' && process.env.ENABLE_TEST_AUTH === 'true') {
     if (token === 'test_staff_token_secret_2026') {
       return {
-        user: {
-          id: '00000000-0000-0000-0000-000000000001',
-          email: 'staff.canteen@campusbites.edu',
-          app_metadata: { role: 'staff' },
-          user_metadata: { name: 'Head Chef (Test)' },
-          aud: 'authenticated',
-          created_at: new Date().toISOString(),
-        } as User,
-        role: 'staff',
+        staff: {
+          user: {
+            id: '00000000-0000-0000-0000-000000000001',
+            email: 'staff.canteen@campusbites.edu',
+            app_metadata: { role: 'staff' },
+            user_metadata: { name: 'Head Chef (Test)' },
+            aud: 'authenticated',
+            created_at: new Date().toISOString(),
+          } as User,
+          role: 'staff',
+        },
+        userId: '00000000-0000-0000-0000-000000000001',
       }
     }
   }
 
   const { data, error } = await client.auth.getUser(token)
-  if (error || !data.user) return null
+  if (error || !data.user) return { staff: null, userId: null, denial: 'session' }
+
+  if (data.user.email?.trim().toLowerCase() !== STAFF_DASHBOARD_EMAIL) {
+    return { staff: null, userId: data.user.id, denial: 'account' }
+  }
 
   const appRole = data.user.app_metadata?.role
   if (appRole === 'admin' || appRole === 'staff' || data.user.app_metadata?.is_staff === true) {
-    return { user: data.user, role: appRole === 'admin' ? 'admin' : 'staff' }
+    return { staff: { user: data.user, role: appRole === 'admin' ? 'admin' : 'staff' }, userId: data.user.id }
   }
 
   const { data: staffRow, error: roleError } = await client
@@ -74,9 +85,21 @@ async function verifyStaff(client: SupabaseClient, token: string): Promise<Staff
 
   if (roleError) throw new Error('Staff access could not be verified.')
   if (staffRow?.role === 'admin' || staffRow?.role === 'staff') {
-    return { user: data.user, role: staffRow.role }
+    return { staff: { user: data.user, role: staffRow.role }, userId: data.user.id }
   }
-  return null
+
+  const { data: profile, error: profileError } = await client
+    .from('profiles')
+    .select('role')
+    .eq('id', data.user.id)
+    .maybeSingle()
+
+  if (profileError) throw new Error('Staff access could not be verified.')
+  if (profile?.role === 'admin' || profile?.role === 'staff') {
+    return { staff: { user: data.user, role: profile.role }, userId: data.user.id }
+  }
+
+  return { staff: null, userId: data.user.id, denial: 'role' }
 }
 
 function errorResponse(res: ApiResponse, status: number, message: string) {
@@ -96,14 +119,33 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
 
   let client: SupabaseClient
   let staff: StaffIdentity | null
+  let authenticatedUserId: string | null = null
+  let authorizationDenial: 'account' | 'role' | 'session' | undefined
   try {
     client = getAdminClient()
-    staff = await verifyStaff(client, token)
+    const verification = await verifyStaff(client, token)
+    staff = verification.staff
+    authenticatedUserId = verification.userId
+    authorizationDenial = verification.denial
   } catch (error) {
     console.error('Staff authorization lookup failed:', error instanceof Error ? error.message : 'Unknown error')
     return errorResponse(res, 503, 'Staff access is temporarily unavailable.')
   }
-  if (!staff) return errorResponse(res, 403, 'This account is not authorized for staff access.')
+  if (!staff) {
+    if (authorizationDenial === 'account') {
+      return errorResponse(res, 403, `This dashboard is restricted to ${STAFF_DASHBOARD_EMAIL}.`)
+    }
+    // Include the authenticated UUID so an administrator can compare it with
+    // staff_roles.user_id. Email alone is not an authorization key.
+    console.warn('Staff role not found for authenticated Supabase user:', authenticatedUserId || 'unknown')
+    return errorResponse(
+      res,
+      authorizationDenial === 'role' ? 403 : 401,
+      authorizationDenial === 'role'
+        ? `Supabase authenticated user ${authenticatedUserId}, but no staff role was found for that user ID. Compare it with public.staff_roles.user_id and confirm this API uses the same Supabase project.`
+        : 'Supabase did not return an authenticated user. Sign out and sign in again.'
+    )
+  }
 
   if (req.method === 'GET') {
     try {

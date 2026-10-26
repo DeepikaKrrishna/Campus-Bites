@@ -1,6 +1,10 @@
 import express, { type Request, type Response } from 'express'
 import cors from 'cors'
-import { config, isRazorpayLiveConfigured } from './config'
+import {
+  config,
+  isRazorpayConfigured,
+  isRazorpayLiveConfigured,
+} from './config'
 import { paymentsRouter } from './routes/payments'
 import { ordersRouter } from './routes/orders'
 import { staffRouter } from './routes/staff'
@@ -64,7 +68,13 @@ app.get('/api/health', async (_req: Request, res: Response) => {
 if (process.env.NODE_ENV !== 'test') {
   app.listen(config.port, () => {
     console.log(`[CampusBites API] Server running on http://localhost:${config.port}`)
-    console.log(`[CampusBites API] Payment Mode: ${isRazorpayLiveConfigured() ? 'LIVE' : 'TEST / SIMULATOR'}`)
+    const paymentMode = isRazorpayLiveConfigured()
+  ? 'LIVE'
+  : isRazorpayConfigured()
+    ? 'RAZORPAY TEST MODE'
+    : 'TEST / SIMULATOR'
+
+console.log(`[CampusBites API] Payment Mode: ${paymentMode}`)
     console.log(`[CampusBites API] Supabase connected to: ${config.supabase.url}`)
   })
 }

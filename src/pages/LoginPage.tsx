@@ -4,9 +4,10 @@ import { APP_ICON } from "../assets/appLogo"
 
 type LoginPageProps = {
   onLogin: (user: AppUser) => void
+  onStaffPortalClick: () => void
 }
 
-export default function LoginPage({ onLogin }: LoginPageProps) {
+export default function LoginPage({ onLogin, onStaffPortalClick }: LoginPageProps) {
   const [mode, setMode] = useState<"login" | "signup">("login")
 
   const [name, setName] = useState("")
@@ -606,6 +607,29 @@ export default function LoginPage({ onLogin }: LoginPageProps) {
           {/* =========================
               BOTTOM SWITCH
           ========================= */}
+          <button
+            type="button"
+            onClick={() => {
+              changeMode("login")
+              onStaffPortalClick()
+            }}
+            style={{
+              display: "block",
+              width: "100%",
+              marginTop: "18px",
+              padding: "11px 12px",
+              borderRadius: "10px",
+              border: "1px solid #cfe8dc",
+              background: "#f3fbf6",
+              color: "#08734f",
+              fontSize: "11px",
+              fontWeight: "800",
+              cursor: "pointer",
+            }}
+          >
+            Canteen staff sign in
+          </button>
+
           <p
             style={{
               textAlign: "center",

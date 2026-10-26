@@ -19,18 +19,31 @@ export function clearStoredStaffPasskey(): void {
 /**
  * Verifies staff authorization against the server's protected database role.
  */
-export async function verifyStaffRole(): Promise<boolean> {
+export async function verifyStaffRole(): Promise<{ authorized: boolean; error?: string }> {
   try {
     const headers = await getAuthHeaders()
     const res = await fetch('/api/staff/verify-role', { headers })
-    if (res.ok) {
-      const data = await res.json()
-      return Boolean(data.authorized)
+    const data = await res.json()
+    if (res.ok && data.authorized === true) return { authorized: true }
+    if (res.status === 403) {
+      return {
+        authorized: false,
+        error: 'You are signed in, but this account is not assigned a staff role. Ask your administrator to grant staff access.',
+      }
+    }
+    return {
+      authorized: false,
+      error: data.error || (res.status === 401
+        ? 'Your sign-in session is missing or expired. Sign in with your canteen staff account and try again.'
+        : 'This account is not assigned a staff role. Ask an administrator to grant staff access.'),
     }
   } catch (err) {
     console.warn('Staff verify error:', err)
+    return {
+      authorized: false,
+      error: 'Unable to verify staff access with the server. Check your connection and try again.',
+    }
   }
-  return false
 }
 
 /**

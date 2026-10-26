@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express'
 import crypto from 'crypto'
 import Razorpay from 'razorpay'
-import { config, isRazorpayLiveConfigured } from '../config'
+import { config, isRazorpayConfigured } from '../config'
 import {
   getAuthoritativeMenu,
   validateCartAndCalculateTotals,
@@ -16,17 +16,29 @@ import { requireAuth } from '../auth'
 
 export const paymentsRouter = Router()
 
-// Initialize Razorpay instance if keys are configured
 let razorpayInstance: Razorpay | null = null
-if (config.razorpay.keyId && config.razorpay.keySecret) {
-  try {
-    razorpayInstance = new Razorpay({
-      key_id: config.razorpay.keyId,
-      key_secret: config.razorpay.keySecret,
-    })
-  } catch (err) {
-    console.warn('Razorpay SDK initialization warning:', err)
+
+export function getRazorpayInstance(): Razorpay | null {
+  const keyId = config.razorpay.keyId || process.env.RAZORPAY_KEY_ID || process.env.VITE_RAZORPAY_KEY_ID || ''
+  const keySecret = config.razorpay.keySecret || process.env.RAZORPAY_KEY_SECRET || ''
+
+  if (!keyId || !keySecret || !isRazorpayConfigured()) {
+    return null
   }
+
+  if (!razorpayInstance || (razorpayInstance as any).key_id !== keyId) {
+    try {
+      razorpayInstance = new Razorpay({
+        key_id: keyId,
+        key_secret: keySecret,
+      })
+    } catch (err) {
+      console.warn('Razorpay SDK initialization warning:', err)
+      return null
+    }
+  }
+
+  return razorpayInstance
 }
 
 function genOrderNumber(): string {
@@ -55,6 +67,32 @@ paymentsRouter.post('/create-order', requireAuth, async (req: Request, res: Resp
 
     if (!validation.valid) {
       return res.status(400).json({ success: false, error: validation.error })
+    }
+
+    if (!['upi', 'card', 'cash'].includes(paymentMethod)) {
+      return res.status(400).json({ success: false, error: 'Unsupported payment method.' })
+    }
+
+    if (paymentMethod === 'card' && !isRazorpayConfigured()) {
+      return res.status(503).json({
+        success: false,
+        error: 'Card payments are unavailable until Razorpay is configured.',
+      })
+    }
+
+    if (paymentMethod !== 'cash' && !isRazorpayConfigured() && config.nodeEnv === 'production') {
+      return res.status(503).json({
+        success: false,
+        error: 'Online payments are temporarily unavailable. Please choose cash or try again later.',
+      })
+    }
+
+    const rzp = getRazorpayInstance()
+    if (paymentMethod !== 'cash' && isRazorpayConfigured() && !rzp) {
+      return res.status(503).json({
+        success: false,
+        error: 'Razorpay could not be initialized. Please check credentials and try again later.',
+      })
     }
 
     const { validatedItems, subtotal, tax, packing, total, amountInPaise } = validation
@@ -118,9 +156,9 @@ paymentsRouter.post('/create-order', requireAuth, async (req: Request, res: Resp
     let razorpayOrderId = ''
     let isSimulator = false
 
-    if (isRazorpayLiveConfigured() && razorpayInstance) {
+    if (isRazorpayConfigured() && rzp) {
       try {
-        const rzpOrder = await razorpayInstance.orders.create({
+        const rzpOrder = await rzp.orders.create({
           amount: amountInPaise,
           currency: 'INR',
           receipt: orderNumber,
@@ -128,16 +166,19 @@ paymentsRouter.post('/create-order', requireAuth, async (req: Request, res: Resp
             campus_order_id: campusOrderId,
             token_number: String(tokenNumber),
             customer_user_id: effectiveUserId,
+            payment_method: paymentMethod,
           },
         })
         razorpayOrderId = rzpOrder.id
       } catch (rzpErr: any) {
-        console.error('Razorpay API error, falling back to verified test mode:', rzpErr.message)
-        razorpayOrderId = 'order_test_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6)
-        isSimulator = true
+        console.error('Razorpay order creation failed:', rzpErr instanceof Error ? rzpErr.message : rzpErr)
+        return res.status(502).json({
+          success: false,
+          error: `Unable to start Razorpay checkout: ${rzpErr instanceof Error ? rzpErr.message : 'Gateway error'}`,
+        })
       }
     } else {
-      // Deterministic test-mode gateway order for official test simulation
+      // Simulated payments are available only in non-production without gateway credentials.
       razorpayOrderId = 'order_test_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6)
       isSimulator = true
     }
@@ -154,6 +195,8 @@ paymentsRouter.post('/create-order', requireAuth, async (req: Request, res: Resp
       payment_method: paymentMethod,
     })
 
+    const keyId = config.razorpay.keyId || process.env.RAZORPAY_KEY_ID || process.env.VITE_RAZORPAY_KEY_ID || ''
+
     return res.status(200).json({
       success: true,
       orderId: campusOrderId,
@@ -163,7 +206,7 @@ paymentsRouter.post('/create-order', requireAuth, async (req: Request, res: Resp
       amount: amountInPaise,
       total,
       currency: 'INR',
-      keyId: config.razorpay.keyId,
+      keyId,
       isSimulator,
       etaMinutes,
     })
@@ -209,7 +252,7 @@ paymentsRouter.post('/verify', requireAuth, async (req: Request, res: Response) 
     let isValid = false
 
     const trustedSimulator =
-      !isRazorpayLiveConfigured() &&
+      !isRazorpayConfigured() &&
       process.env.NODE_ENV !== 'production' &&
       paymentRecord.gateway_order_id?.startsWith('order_test_')
 
@@ -267,7 +310,7 @@ paymentsRouter.post('/verify', requireAuth, async (req: Request, res: Response) 
     })
 
     // Payment confirmation is separate from the staff-controlled kitchen lifecycle.
-    await updateOrderRecord(
+    const updatedOrder = await updateOrderRecord(
       orderId,
       {
         payment_status: 'PAID',
@@ -278,9 +321,10 @@ paymentsRouter.post('/verify', requireAuth, async (req: Request, res: Response) 
       success: true,
       verified: true,
       orderId,
+      order: updatedOrder,
       paymentId: razorpayPaymentId,
       status: 'PAID',
-      orderStatus: 'PLACED',
+      orderStatus: updatedOrder?.status || 'PLACED',
       message: 'Payment verified successfully. Your order is waiting for kitchen staff.',
     })
   } catch (error: unknown) {

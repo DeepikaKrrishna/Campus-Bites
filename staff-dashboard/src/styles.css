@@ -29,14 +29,20 @@ button:disabled { cursor: not-allowed; opacity: .6; }
 .muted, .page-heading p, .panel-heading p { color: var(--muted); font-size: 13px; line-height: 1.55; }
 .login-form { display: grid; gap: 17px; margin-top: 27px; }
 .login-form label, .reason-modal label { display: grid; gap: 8px; color: #475365; font-size: 12px; font-weight: 700; }
-.login-form input, .reason-modal textarea { width: 100%; padding: 12px 14px; border: 1px solid #dce2e9; border-radius: 11px; outline: none; background: #fff; color: #182538; }
+.login-form input, .reason-modal input:not([type='checkbox']), .reason-modal textarea { width: 100%; padding: 12px 14px; border: 1px solid #dce2e9; border-radius: 11px; outline: none; background: #fff; color: #182538; }
 .login-form input:focus, .reason-modal textarea:focus, .search-box:focus-within { border-color: #4ba981; box-shadow: 0 0 0 3px #168a6212; }
+.password-input-wrap { position: relative; display: block; }
+.password-input-wrap input { padding-right: 60px; }
+.password-toggle { position: absolute; top: 50%; right: 10px; padding: 5px; transform: translateY(-50%); border: 0; background: transparent; color: #168a62; font-size: 11px; font-weight: 800; }
+.forgot-password { justify-self: end; margin-top: -10px; padding: 0; border: 0; background: transparent; color: #168a62; font-size: 11px; font-weight: 700; text-decoration: underline; }
+.forgot-password:disabled { cursor: wait; }
 .primary, .danger-button { border: 0; border-radius: 10px; background: #168a62; color: #fff; font-size: 12px; font-weight: 800; transition: .16s ease; }
 .primary:hover:not(:disabled) { background: #0e7551; transform: translateY(-1px); }
 .primary.full { width: 100%; padding: 13px 16px; }
 .login-footnote { margin: 25px 0 0; color: #9aa4b1; font-size: 11px; text-align: center; }
 .alert { padding: 12px 14px; border-radius: 10px; font-size: 12px; line-height: 1.5; }
 .alert.error { border: 1px solid #f3d6d4; background: #fff5f4; color: #9d3f3c; }
+.alert.success { border: 1px solid #c8e9d9; background: #f1fbf5; color: #176b49; }
 .retry-inline { margin-left: 10px; border: 0; background: none; color: #8e3733; font-size: 11px; font-weight: 800; text-decoration: underline; }
 
 .dashboard-shell { min-height: 100vh; background: #f3f5f8; }
@@ -125,6 +131,10 @@ button:disabled { cursor: not-allowed; opacity: .6; }
 .reason-modal h2, .confirm-modal h2 { margin: 8px 0; color: #1d2a3d; font-family: Manrope, sans-serif; font-size: 20px; }
 .reason-modal p, .confirm-modal p { margin: 0 0 20px; color: #7e8998; font-size: 11px; line-height: 1.5; }
 .reason-modal textarea { min-height: 92px; resize: vertical; font-size: 11px; }
+.password-modal { display: grid; gap: 14px; }
+.password-modal p { margin-bottom: 0; }
+.password-visibility-option { display: flex !important; align-items: center; gap: 8px !important; }
+.password-visibility-option input { width: 15px; height: 15px; margin: 0; accent-color: #168a62; }
 .modal-close { position: absolute; top: 14px; right: 14px; width: 28px; height: 28px; border: 0; border-radius: 8px; background: #f3f5f7; color: #718092; font-size: 20px; line-height: 1; }
 .modal-actions { display: flex; justify-content: end; gap: 8px; margin-top: 18px; }
 .danger-button { padding: 10px 14px; background: #b9534d; }.danger-button:hover:not(:disabled) { background: #9c423d; }

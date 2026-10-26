@@ -149,7 +149,12 @@ export default function App() {
   }
 
   if (!user) {
-    return <LoginPage onLogin={handleLogin} />
+    return (
+      <LoginPage
+        onLogin={handleLogin}
+        onStaffPortalClick={() => setTab('staff')}
+      />
+    )
   }
 
   const renderPage = () => {
@@ -246,7 +251,7 @@ export default function App() {
         }}
       >
         {/* Live Backend & Staff Switcher Indicator Banner */}
-        {isSupabaseConfigured && (
+        {true && (
           <div
             style={{
               background: '#15803d',

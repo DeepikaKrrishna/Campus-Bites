@@ -30,8 +30,9 @@ export default function StaffDashboard({ onBackToCustomer }: Props) {
 
   // Verify staff role against backend on mount
   useEffect(() => {
-    verifyStaffRole().then((ok) => {
-      if (ok) setIsAuthorized(true)
+    verifyStaffRole().then((result) => {
+      setIsAuthorized(result.authorized)
+      if (!result.authorized && result.error) setAuthError(result.error)
     })
   }, [])
 
@@ -135,12 +136,12 @@ export default function StaffDashboard({ onBackToCustomer }: Props) {
     e.preventDefault()
     setVerifyingAuth(true)
     setAuthError('')
-    const ok = await verifyStaffRole()
+    const result = await verifyStaffRole()
     setVerifyingAuth(false)
-    if (ok) {
+    if (result.authorized) {
       setIsAuthorized(true)
     } else {
-      setAuthError('Unauthorized: Your active session does not have staff permissions. Please sign in with an authorized canteen staff account (e.g. staff.canteen@campusbites.edu).')
+      setAuthError(result.error || 'Staff access could not be verified.')
     }
   }
 

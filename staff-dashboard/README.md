@@ -23,7 +23,7 @@ An independent React/Vite staff application. It uses the same Supabase project a
    npm run dev
    ```
 
-The local Vite server proxies `/api` to the local staff API on port 8788. The API verifies every Supabase session and checks trusted `app_metadata` or `public.staff_roles` before returning orders or allowing transitions.
+The local Vite server proxies `/api` to the local staff API on port 8788. The API only accepts the `staff.canteen@campusbites.edu` Supabase account, then verifies its trusted `app_metadata` or `public.staff_roles` before returning orders or allowing transitions. Passwords are checked and stored by Supabase Auth; they must never be hardcoded in the client or API source.
 
 ## Authorize a staff account
 
@@ -51,7 +51,7 @@ The dashboard does not provide a role-editing or self-promotion flow. An ordinar
    - `SUPABASE_SERVICE_ROLE_KEY` — that project's server-only service-role key. Do not prefix it with `VITE_`.
    - Optional `SUPABASE_URL` — same project URL; if omitted, the server function uses `VITE_SUPABASE_URL`.
 5. Deploy the new Vercel project. Its `/api/staff/orders` function shares the dashboard's own domain, so cross-origin API configuration is not needed.
-6. In Supabase Auth URL Configuration, add the deployed dashboard URL to the allowed redirect URLs if you later enable OAuth or email-link authentication. Password sign-in works without an OAuth redirect callback.
+6. In Supabase Auth URL Configuration, add the deployed dashboard URL (and `http://localhost:5174/**` for local development) to the allowed redirect URLs. Password reset links return to the dashboard so the staff member can set a new password. Supabase Auth email delivery must be enabled for reset emails to arrive.
 
 To verify both apps point at one database, compare the project reference in their Supabase URLs and confirm both use the same Supabase project in the dashboard. The service-role key must stay only in server-side Vercel environment variables.
 

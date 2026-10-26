@@ -5,6 +5,7 @@ import { nextStep, statusNames, type Order, type OrderStatus } from './types'
 
 type ApiResult = { success?: boolean; error?: string; orders?: Order[]; order?: Order }
 type FilterKey = 'ALL' | OrderStatus
+const STAFF_DASHBOARD_EMAIL = 'staff.canteen@campusbites.edu'
 
 async function staffRequest(
   session: Session,
@@ -81,10 +82,22 @@ function App() {
   const [authLoading, setAuthLoading] = useState(true)
   const [authorized, setAuthorized] = useState(false)
   const [checkingRole, setCheckingRole] = useState(false)
-  const [email, setEmail] = useState('')
+  const [email] = useState(STAFF_DASHBOARD_EMAIL)
   const [password, setPassword] = useState('')
+  const [showPassword, setShowPassword] = useState(false)
   const [loginBusy, setLoginBusy] = useState(false)
   const [loginError, setLoginError] = useState('')
+  const [loginNotice, setLoginNotice] = useState('')
+  const [resetBusy, setResetBusy] = useState(false)
+  const [passwordRecovery, setPasswordRecovery] = useState(false)
+  const [newPassword, setNewPassword] = useState('')
+  const [recoveryBusy, setRecoveryBusy] = useState(false)
+  const [changePasswordOpen, setChangePasswordOpen] = useState(false)
+  const [changePassword, setChangePassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [changePasswordBusy, setChangePasswordBusy] = useState(false)
+  const [passwordChangeError, setPasswordChangeError] = useState('')
+  const [passwordChangeSuccess, setPasswordChangeSuccess] = useState('')
   const [orders, setOrders] = useState<Order[]>([])
   const [loading, setLoading] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
@@ -112,7 +125,8 @@ function App() {
     }).catch(() => {
       if (alive) setAuthLoading(false)
     })
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, nextSession) => {
+      if (event === 'PASSWORD_RECOVERY') setPasswordRecovery(true)
       setSession(nextSession)
       setAuthorized(false)
       setOrders([])
@@ -138,7 +152,7 @@ function App() {
       const status = (requestError as Error & { status?: number }).status
       if (status === 403) {
         setAuthorized(false)
-        setError('Access denied: Your account does not have canteen staff permissions. An administrator must assign a staff role.')
+        setError(requestError instanceof Error ? requestError.message : 'This account is not authorized for staff access.')
       } else if (status === 401) {
         setAuthorized(false)
         setError('Your session expired. Please sign in again.')
@@ -152,13 +166,14 @@ function App() {
   }, [session])
 
   useEffect(() => {
+    if (passwordRecovery) return
     if (!session) {
       setAuthorized(false)
       return
     }
     setCheckingRole(true)
     void loadOrders(false, session).finally(() => setCheckingRole(false))
-  }, [session, loadOrders])
+  }, [session, loadOrders, passwordRecovery])
 
   useEffect(() => {
     const client = supabase
@@ -217,6 +232,7 @@ function App() {
     if (!supabase) return
     setLoginBusy(true)
     setLoginError('')
+    setLoginNotice('')
     const { data, error: signInError } = await supabase.auth.signInWithPassword({
       email: email.trim(),
       password,
@@ -228,6 +244,66 @@ function App() {
     }
     setSession(data.session)
     setPassword('')
+  }
+
+  async function requestPasswordReset() {
+    if (!supabase) return
+    const normalizedEmail = email.trim()
+    if (!normalizedEmail) {
+      setLoginError('Enter your email address first, then choose “Forgot password?”.')
+      return
+    }
+    setResetBusy(true)
+    setLoginError('')
+    setLoginNotice('')
+    const { error: resetError } = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
+      redirectTo: window.location.origin,
+    })
+    setResetBusy(false)
+    if (resetError) {
+      setLoginError(resetError.message)
+      return
+    }
+    setLoginNotice('If an account exists for that email, a password reset link is on its way.')
+  }
+
+  async function updateRecoveredPassword(event: FormEvent) {
+    event.preventDefault()
+    if (!supabase) return
+    setRecoveryBusy(true)
+    setLoginError('')
+    const { error: updateError } = await supabase.auth.updateUser({ password: newPassword })
+    setRecoveryBusy(false)
+    if (updateError) {
+      setLoginError(updateError.message)
+      return
+    }
+    await supabase.auth.signOut()
+    setPasswordRecovery(false)
+    setSession(null)
+    setNewPassword('')
+    setLoginNotice('Password updated. Sign in with your new password.')
+  }
+
+  async function updateStaffPassword(event: FormEvent) {
+    event.preventDefault()
+    if (!supabase || changePasswordBusy) return
+    if (changePassword !== confirmPassword) {
+      setPasswordChangeError('The passwords do not match.')
+      return
+    }
+    setChangePasswordBusy(true)
+    setPasswordChangeError('')
+    setPasswordChangeSuccess('')
+    const { error: updateError } = await supabase.auth.updateUser({ password: changePassword })
+    setChangePasswordBusy(false)
+    if (updateError) {
+      setPasswordChangeError(updateError.message)
+      return
+    }
+    setChangePassword('')
+    setConfirmPassword('')
+    setPasswordChangeSuccess('Password saved to your CampusBites account. Use it the next time you sign in.')
   }
 
   async function signOut() {
@@ -273,12 +349,43 @@ function App() {
     return <ConfigMessage />
   }
 
-  if (authLoading || checkingRole) {
+  if (authLoading || (checkingRole && !passwordRecovery)) {
     return (
       <div className="center-state">
         <div className="spinner" />
         <p>Checking staff authorization…</p>
       </div>
+    )
+  }
+
+  if (passwordRecovery) {
+    return (
+      <main className="login-shell">
+        <section className="login-card">
+          <div className="brand-mark">CB</div>
+          <span className="eyebrow">CAMPUSBITES OPERATIONS</span>
+          <h1>Set a new password</h1>
+          <p className="muted">Choose a new password for your staff account.</p>
+          <form onSubmit={updateRecoveredPassword} className="login-form">
+            <label>
+              New password
+              <input
+                type={showPassword ? 'text' : 'password'}
+                value={newPassword}
+                onChange={(event) => setNewPassword(event.target.value)}
+                autoComplete="new-password"
+                minLength={8}
+                required
+                autoFocus
+              />
+            </label>
+            <button className="primary full" type="submit" disabled={recoveryBusy}>
+              {recoveryBusy ? 'Updating…' : 'Update password'}
+            </button>
+            {loginError ? <div className="alert error" role="alert">{loginError}</div> : null}
+          </form>
+        </section>
+      </main>
     )
   }
 
@@ -296,7 +403,7 @@ function App() {
               <div className="alert error" role="alert">
                 <strong>Access Restricted</strong>
                 <p style={{ margin: '4px 0 0', fontSize: 11 }}>
-                  Signed in as <b>{session.user.email}</b>. This account is not authorized as staff. Student accounts cannot view canteen orders.
+                  Signed in as <b>{session.user.email}</b>. {error || 'Checking staff authorization failed.'}
                 </p>
                 <div style={{ marginTop: 10, display: 'flex', gap: 10 }}>
                   <button className="retry-inline" type="button" onClick={() => void loadOrders(true, session)}>
@@ -313,27 +420,41 @@ function App() {
           {!session ? (
             <form onSubmit={signIn} className="login-form">
               <label>
-                Email address
+                Staff account
                 <input
                   type="email"
                   value={email}
-                  onChange={(event) => setEmail(event.target.value)}
+                  readOnly
                   autoComplete="username"
-                  placeholder="staff@campusbites.edu"
                   required
                 />
               </label>
-              <label>
+              <label className="password-label">
                 Password
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  autoComplete="current-password"
-                  required
-                />
+                <span className="password-input-wrap">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={password}
+                    onChange={(event) => setPassword(event.target.value)}
+                    autoComplete="current-password"
+                    required
+                  />
+                  <button
+                    className="password-toggle"
+                    type="button"
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    aria-pressed={showPassword}
+                    onClick={() => setShowPassword((visible) => !visible)}
+                  >
+                    {showPassword ? 'Hide' : 'Show'}
+                  </button>
+                </span>
               </label>
+              <button className="text-button forgot-password" type="button" onClick={() => void requestPasswordReset()} disabled={resetBusy}>
+                {resetBusy ? 'Sending reset link…' : 'Forgot password?'}
+              </button>
               {loginError ? <div className="alert error" role="alert">{loginError}</div> : null}
+              {loginNotice ? <div className="alert success" role="status">{loginNotice}</div> : null}
               <button className="primary full" type="submit" disabled={loginBusy}>
                 {loginBusy ? 'Verifying…' : 'Sign in to staff portal'}
               </button>
@@ -374,6 +495,16 @@ function App() {
             {realtimeState === 'live' ? 'Live updates' : realtimeState === 'connecting' ? 'Connecting' : 'Realtime offline'}
           </span>
           <span className="user-email">{session.user.email}</span>
+          <button
+            className="ghost-button"
+            onClick={() => {
+              setPasswordChangeError('')
+              setPasswordChangeSuccess('')
+              setChangePasswordOpen(true)
+            }}
+          >
+            Change password
+          </button>
           <button className="ghost-button" onClick={() => void signOut()}>Sign out</button>
         </div>
       </header>
@@ -559,6 +690,83 @@ function App() {
           CampusBites Kitchen Operations. Connected to shared PostgreSQL orders database.
         </footer>
       </main>
+
+      {changePasswordOpen ? (
+        <div className="modal-backdrop" role="presentation">
+          <form
+            className="reason-modal password-modal"
+            onSubmit={updateStaffPassword}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="change-password-title"
+          >
+            <button
+              className="modal-close"
+              type="button"
+              onClick={() => setChangePasswordOpen(false)}
+              aria-label="Close"
+            >
+              ×
+            </button>
+            <span className="eyebrow">STAFF ACCOUNT</span>
+            <h2 id="change-password-title">Change password</h2>
+            <p>Your new password is saved to your CampusBites account and will be used the next time you sign in.</p>
+            {passwordChangeSuccess ? (
+              <div className="alert success" role="status">{passwordChangeSuccess}</div>
+            ) : (
+              <>
+                <label>
+                  New password
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={changePassword}
+                    onChange={(event) => setChangePassword(event.target.value)}
+                    autoComplete="new-password"
+                    minLength={8}
+                    required
+                    autoFocus
+                  />
+                </label>
+                <label>
+                  Confirm new password
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    value={confirmPassword}
+                    onChange={(event) => setConfirmPassword(event.target.value)}
+                    autoComplete="new-password"
+                    minLength={8}
+                    required
+                  />
+                </label>
+                <label className="password-visibility-option">
+                  <input
+                    type="checkbox"
+                    checked={showPassword}
+                    onChange={(event) => setShowPassword(event.target.checked)}
+                  />
+                  Show password
+                </label>
+                {passwordChangeError ? <div className="alert error" role="alert">{passwordChangeError}</div> : null}
+                <div className="modal-actions">
+                  <button type="button" className="ghost-button" onClick={() => setChangePasswordOpen(false)}>
+                    Cancel
+                  </button>
+                  <button type="submit" className="primary" disabled={changePasswordBusy}>
+                    {changePasswordBusy ? 'Saving…' : 'Save password'}
+                  </button>
+                </div>
+              </>
+            )}
+            {passwordChangeSuccess ? (
+              <div className="modal-actions">
+                <button type="button" className="primary" onClick={() => setChangePasswordOpen(false)}>
+                  Done
+                </button>
+              </div>
+            ) : null}
+          </form>
+        </div>
+      ) : null}
 
       {/* Confirmation Modal for Consequential Actions */}
       {confirmingAction ? (
