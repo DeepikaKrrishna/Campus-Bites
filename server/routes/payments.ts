@@ -28,7 +28,8 @@ export function getRazorpayInstance(): Razorpay | null {
 
   if (!razorpayInstance || (razorpayInstance as any).key_id !== keyId) {
     try {
-      razorpayInstance = new Razorpay({
+      const Rzp = (Razorpay as any)?.default || Razorpay
+      razorpayInstance = new Rzp({
         key_id: keyId,
         key_secret: keySecret,
       })

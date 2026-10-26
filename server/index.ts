@@ -31,13 +31,18 @@ app.use(
 )
 app.use(express.urlencoded({ extended: true }))
 
-// 3. Mount API Routes
+// 3. Mount API Routes (support both /api/* and root paths for Vercel serverless functions)
 app.use('/api/payments', paymentsRouter)
+app.use('/payments', paymentsRouter)
+
 app.use('/api/orders', ordersRouter)
+app.use('/orders', ordersRouter)
+
 app.use('/api/staff', staffRouter)
+app.use('/staff', staffRouter)
 
 // 4. Health & Status Check Endpoint
-app.get('/api/health', async (_req: Request, res: Response) => {
+app.get(['/api/health', '/health'], async (_req: Request, res: Response) => {
   let dbStatus = 'connected'
   try {
     const { error } = await supabase.from('orders').select('count', { count: 'exact', head: true })

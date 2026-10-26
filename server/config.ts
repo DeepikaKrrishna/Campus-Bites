@@ -1,10 +1,11 @@
-import path from 'path'
-import { fileURLToPath } from 'url'
 import dotenv from 'dotenv'
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url))
-dotenv.config({ path: path.resolve(__dirname, '../.env') })
-dotenv.config()
+// Safely load local .env without crashing on serverless / Vercel
+try {
+  if (typeof process !== 'undefined' && !process.env.VERCEL) {
+    dotenv.config()
+  }
+} catch (_) {}
 
 export const config = {
   port: parseInt(process.env.SERVER_PORT || '5001', 10),
