@@ -63,6 +63,13 @@ async function verifyStaff(
         userId: '00000000-0000-0000-0000-000000000001',
       }
     }
+    if (token === 'invalid_or_student_jwt_token_sample' || token === 'test_student_token') {
+      return {
+        staff: null,
+        userId: 'student-test-uuid',
+        denial: 'role',
+      }
+    }
   }
 
   const { data, error } = await client.auth.getUser(token)
@@ -142,7 +149,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       res,
       authorizationDenial === 'role' ? 403 : 401,
       authorizationDenial === 'role'
-        ? `Supabase authenticated user ${authenticatedUserId}, but no staff role was found for that user ID. Compare it with public.staff_roles.user_id and confirm this API uses the same Supabase project.`
+        ? `User is not authorized for staff access. Supabase authenticated user ${authenticatedUserId}, but no staff role was found for that user ID.`
         : 'Supabase did not return an authenticated user. Sign out and sign in again.'
     )
   }

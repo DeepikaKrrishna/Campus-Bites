@@ -1,8 +1,8 @@
-// api/server/index.ts
+// server/index.ts
 import express from "express";
 import cors from "cors";
 
-// api/server/config.ts
+// server/config.ts
 import dotenv from "dotenv";
 try {
   if (typeof process !== "undefined" && !process.env.VERCEL) {
@@ -37,12 +37,12 @@ function isRazorpayLiveConfigured() {
   return keyId.startsWith("rzp_live_") && Boolean(keySecret) && !keySecret.toLowerCase().includes("demo") && !keyId.toLowerCase().includes("demo");
 }
 
-// api/server/routes/payments.ts
+// server/routes/payments.ts
 import { Router } from "express";
 import crypto2 from "crypto";
 import Razorpay from "razorpay";
 
-// api/server/db.ts
+// server/db.ts
 import { createClient } from "@supabase/supabase-js";
 import crypto from "crypto";
 var supabase = createClient(
@@ -330,7 +330,7 @@ async function getPaymentRecord(gatewayOrderId) {
   return data;
 }
 
-// api/server/auth.ts
+// server/auth.ts
 var UUID_REGEX2 = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 async function authenticateToken(token) {
   if (!token || typeof token !== "string") return null;
@@ -478,7 +478,7 @@ async function optionalAuth(req, _res, next) {
   next();
 }
 
-// api/server/routes/payments.ts
+// server/routes/payments.ts
 var paymentsRouter = Router();
 var razorpayInstance = null;
 function getRazorpayInstance() {
@@ -798,7 +798,7 @@ paymentsRouter.get("/status/:orderId", async (req, res) => {
   }
 });
 
-// api/server/routes/orders.ts
+// server/routes/orders.ts
 import { Router as Router2 } from "express";
 var ordersRouter = Router2();
 var STATUS_TO_STAGE = {
@@ -1013,7 +1013,7 @@ ordersRouter.post("/:id/rate", requireAuth, async (req, res) => {
   }
 });
 
-// api/server/routes/staff.ts
+// server/routes/staff.ts
 import { Router as Router3 } from "express";
 var staffRouter = Router3();
 staffRouter.get("/verify-role", requireAuth, (req, res) => {
@@ -1057,7 +1057,7 @@ staffRouter.get("/stats", requireStaff, async (_req, res) => {
   }
 });
 
-// api/server/index.ts
+// server/index.ts
 var app = express();
 app.use(
   cors({
@@ -1114,8 +1114,10 @@ if (process.env.NODE_ENV !== "test" && !process.env.VERCEL) {
     console.log(`[CampusBites API] Supabase connected to: ${config.supabase.url}`);
   });
 }
-var index_default = app;
+function handler(req, res) {
+  return app(req, res);
+}
 export {
   app,
-  index_default as default
+  handler as default
 };

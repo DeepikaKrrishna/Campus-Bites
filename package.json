@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "server": "tsx server/index.ts",
-    "build": "vite build && esbuild api/server/index.ts --bundle --platform=node --format=esm --packages=external --outfile=api/index.js && esbuild api/server/index.ts --bundle --platform=node --format=esm --packages=external --outfile=\"api/[...all].js\"",
+    "build": "vite build && esbuild server/index.ts --bundle --platform=node --format=esm --packages=external --outfile=api/index.js",
     "test": "npm run test:payments && npm run test:staff",
     "test:payments": "tsx --test server/payment-utils.test.ts",
     "test:staff": "npm --prefix staff-dashboard test",

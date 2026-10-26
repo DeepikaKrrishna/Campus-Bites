@@ -84,4 +84,6 @@ console.log(`[CampusBites API] Payment Mode: ${paymentMode}`)
   })
 }
 
-export default app
+export default function handler(req: any, res: any) {
+  return (app as any)(req, res)
+}

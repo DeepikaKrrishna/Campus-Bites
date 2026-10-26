@@ -32,7 +32,18 @@ const CART_KEY = 'cb_cart'
 function loadSavedCart(): CartItem[] {
   try {
     const raw = localStorage.getItem(CART_KEY)
-    return raw ? JSON.parse(raw) : []
+    if (!raw) return []
+    const parsed = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter(
+      (it) =>
+        it &&
+        typeof it.id === 'number' &&
+        typeof it.name === 'string' &&
+        typeof it.price === 'number' &&
+        typeof it.quantity === 'number' &&
+        it.quantity > 0
+    )
   } catch {
     return []
   }
