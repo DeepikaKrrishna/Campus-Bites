@@ -1,6 +1,6 @@
 import { supabase, isSupabaseConfigured } from './supabase'
 import { normalizeOrder, type Order, type OrderStatus } from './orders'
-import { type AppUser, getAuthHeaders } from './auth'
+import { type AppUser, getAuthHeaders, getStoredUser } from './auth'
 
 const STAFF_PASSKEY_KEY = 'cb_staff_passkey'
 
