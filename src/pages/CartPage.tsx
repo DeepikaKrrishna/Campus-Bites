@@ -21,7 +21,7 @@ const PAYMENT = [
   { key: 'upi', label: 'UPI', sub: 'GPay · PhonePe · Paytm', icon: '📱' },
   { key: 'card', label: 'Card', sub: 'Debit or Credit', icon: '💳' },
   { key: 'cash', label: 'Cash', sub: 'Pay at counter', icon: '💵' },
-]
+] as const
 
 export default function CartPage({
   cart,
@@ -30,7 +30,7 @@ export default function CartPage({
   onTabChange,
   onOrderPlaced,
 }: Props) {
-  const [payment, setPayment] = useState<'upi' | 'card' | 'cash'>('upi')
+  const [payment, setPayment] = useState<'upi' | 'cash'>('upi')
   const [busy, setBusy] = useState(false)
 
   const subtotal = cart.reduce((s, c) => s + c.price * c.quantity, 0)
@@ -42,6 +42,8 @@ export default function CartPage({
   const executeOrder = async (method: 'upi' | 'card' | 'cash') => {
     if (busy || cart.length === 0) return
     setBusy(true)
+    setPaymentMessage('')
+    setCanRetryPayment(false)
 
     try {
       const currentUser: AppUser = user ?? {
@@ -53,8 +55,8 @@ export default function CartPage({
         roomNo: 'Hostel 3 - Room 102',
       }
 
-      // 1. Authoritative Backend Payment Order Creation
-      const paymentOrderRes = await createBackendPaymentOrder(currentUser, cart, method)
+      const paymentOrderRes = await createBackendPaymentOrder(cart, method, existingOrderId)
+      setRetryOrderId(paymentOrderRes.orderId)
 
       // Cash payments are completed immediately
       if (method === 'cash') {
@@ -384,7 +386,7 @@ export default function CartPage({
               </span>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
               {PAYMENT.map((p) => {
                 const isSelected = payment === p.key
                 return (
@@ -417,7 +419,6 @@ export default function CartPage({
               })}
             </div>
 
-            {/* UPI Option Hint */}
             {payment === 'upi' && (
               <div
                 style={{
@@ -455,75 +456,6 @@ export default function CartPage({
               </div>
             )}
           </div>
-
-          {/* Pickup Timing */}
-          <div
-            style={{
-              background: '#ffffff',
-              padding: '14px 20px',
-              marginBottom: 12,
-              borderTop: '1px solid #f1f5f9',
-              borderBottom: '1px solid #f1f5f9',
-            }}
-          >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ color: '#22c55e', fontSize: 18 }}>⏱️</span>
-                <div>
-                  <p style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', margin: 0 }}>
-                    Estimated Prep Time
-                  </p>
-                  <p style={{ fontSize: 11, color: '#64748b', margin: 0 }}>
-                    Pickup at Counter 2 (Main Canteen)
-                  </p>
-                </div>
-              </div>
-              <span style={{ fontSize: 13, fontWeight: 800, color: '#16a34a', background: '#f0fdf4', padding: '4px 10px', borderRadius: 8 }}>
-                12–15 mins
-              </span>
-            </div>
-          </div>
-
-          {/* Bill Summary */}
-          <div
-            style={{
-              background: '#ffffff',
-              padding: '16px 20px',
-              marginBottom: 20,
-              borderTop: '1px solid #f1f5f9',
-              borderBottom: '1px solid #f1f5f9',
-            }}
-          >
-            <p style={{ fontSize: 14, fontWeight: 800, margin: '0 0 12px', color: '#0f172a' }}>
-              Bill Details
-            </p>
-
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-              <span style={{ fontSize: 13, color: '#64748b' }}>Item Total</span>
-              <span style={{ fontSize: 13, color: '#334155', fontWeight: 600 }}>₹{subtotal}</span>
-            </div>
-
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-              <span style={{ fontSize: 13, color: '#64748b' }}>Campus Canteen Tax (5%)</span>
-              <span style={{ fontSize: 13, color: '#334155', fontWeight: 600 }}>₹{tax}</span>
-            </div>
-
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
-              <span style={{ fontSize: 13, color: '#64748b' }}>Eco Packaging & Container</span>
-              <span style={{ fontSize: 13, color: '#334155', fontWeight: 600 }}>₹{packing}</span>
-            </div>
-
-            <div style={{ height: 1, background: '#f1f5f9', margin: '10px 0' }} />
-
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <div>
-                <span style={{ fontSize: 15, fontWeight: 800, color: '#0f172a' }}>To Pay</span>
-                <span style={{ fontSize: 11, color: '#64748b', display: 'block' }}>Inclusive of all taxes</span>
-              </div>
-              <span style={{ fontSize: 18, fontWeight: 900, color: '#0f172a' }}>₹{total}</span>
-            </div>
-          </div>
-
           {/* Checkout Action Button */}
           <div style={{ padding: '0 20px' }}>
             <button

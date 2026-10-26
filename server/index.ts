@@ -10,6 +10,14 @@ import { ordersRouter } from './routes/orders'
 import { staffRouter } from './routes/staff'
 import { supabase } from './db'
 
+declare global {
+  namespace Express {
+    interface Request {
+      rawBody?: Buffer
+    }
+  }
+}
+
 export const app = express()
 
 // 1. CORS Configuration
@@ -25,7 +33,7 @@ app.use(
 app.use(
   express.json({
     verify: (req: Request, _res: Response, buf: Buffer) => {
-      ;(req as any).rawBody = buf.toString('utf8')
+      req.rawBody = Buffer.from(buf)
     },
   })
 )
@@ -58,8 +66,7 @@ app.get('/api/health', async (_req: Request, res: Response) => {
     },
     paymentGateway: {
       provider: 'Razorpay Standard Checkout',
-      mode: isRazorpayLiveConfigured() ? 'Live Production Mode' : 'Verified Test Mode (UPI & Sandbox)',
-      keyId: config.razorpay.keyId,
+      mode: isRazorpayTestConfigured() ? 'Test Mode' : 'Not configured',
     },
   })
 })

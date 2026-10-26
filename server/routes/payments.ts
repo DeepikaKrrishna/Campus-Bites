@@ -11,8 +11,14 @@ import {
   savePaymentRecord,
   updatePaymentRecord,
   getPaymentRecord,
-} from '../db'
-import { requireAuth } from '../auth'
+  getLatestPaymentForOrder,
+  processRazorpayPaymentEvent,
+} from "../db"
+import { requireAuth } from "../auth"
+import {
+  classifyPaymentAttempts,
+  isValidHexHmac,
+} from "../payment-utils"
 
 export const paymentsRouter = Router()
 
@@ -42,20 +48,68 @@ export function getRazorpayInstance(): Razorpay | null {
 }
 
 function genOrderNumber(): string {
-  return 'CB-' + String(Math.floor(10000 + Math.random() * 90000))
+  return "CB-" + String(Math.floor(10000 + Math.random() * 90000))
 }
 
 function genTokenNumber(): number {
   return Math.floor(10 + Math.random() * 89)
 }
 
+function paymentUnavailable(res: Response) {
+  return res.status(503).json({
+    success: false,
+    error:
+      "Razorpay Test Mode is not configured. Ask the project owner to configure test credentials.",
+  })
+}
+
+function orderIsPayable(
+  order: {
+    status: string
+    payment_status: string
+    payment: string
+  } | null,
+): boolean {
+  return Boolean(
+    order &&
+      order.status !== "CANCELLED" &&
+      order.status !== "PICKED_UP" &&
+      order.payment_status !== "PAID",
+  )
+}
+
+async function createRazorpayOrder(input: {
+  orderId: string
+  orderNumber: string
+  tokenNumber: number
+  userId: string
+  amount: number
+}) {
+  if (!razorpay || !isRazorpayTestConfigured()) {
+    throw new Error("Razorpay Test Mode is not configured.")
+  }
+  const created = await razorpay.orders.create({
+    amount: input.amount,
+    currency: "INR",
+    receipt: input.orderNumber,
+    notes: {
+      campus_order_id: input.orderId,
+      token_number: String(input.tokenNumber),
+      customer_user_id: input.userId,
+    },
+  })
+  if (created.currency !== "INR" || created.amount !== input.amount) {
+    throw new Error(
+      "Razorpay returned an order with an unexpected amount or currency.",
+    )
+  }
+  return created
+}
+
 /**
- * 1. Create Payment Order
+ * Creates a CampusBites order and a real Razorpay Test Mode order.
  * POST /api/payments/create-order
  */
-paymentsRouter.post('/create-order', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const { items, paymentMethod = 'upi' } = req.body
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ success: false, error: 'Order items are required.' })
@@ -141,14 +195,8 @@ paymentsRouter.post('/create-order', requireAuth, async (req: Request, res: Resp
         orderId: campusOrderId,
         orderNumber,
         tokenNumber,
-        amount: total,
-        amountInPaise,
-        total,
-        currency: 'INR',
-        paymentMethod: 'cash',
-        paymentStatus: 'PENDING',
-        etaMinutes,
-        message: 'Order placed with Cash payment. Please pay at counter upon pickup.',
+        userId: req.user!.id,
+        amount: amountInPaise,
       })
     }
 
@@ -217,17 +265,9 @@ paymentsRouter.post('/create-order', requireAuth, async (req: Request, res: Resp
 })
 
 /**
- * 2. Server-Side Payment Verification
+ * Verifies the checkout signature and the authoritative Razorpay payment.
  * POST /api/payments/verify
  */
-paymentsRouter.post('/verify', requireAuth, async (req: Request, res: Response) => {
-  try {
-    const {
-      orderId,
-      razorpayOrderId,
-      razorpayPaymentId,
-      razorpaySignature,
-    } = req.body
 
     if (!orderId || !razorpayOrderId || !razorpayPaymentId) {
       return res.status(400).json({
@@ -269,20 +309,29 @@ paymentsRouter.post('/verify', requireAuth, async (req: Request, res: Response) 
           Buffer.from(expectedSignature),
           Buffer.from(razorpaySignature)
         )
+      ) {
+        return res
+          .status(400)
+          .json({
+            success: false,
+            verified: false,
+            error: "Payment signature is invalid.",
+          })
       }
-    } else {
-      // Validated test mode simulation
+      const gatewayPayment = await razorpay.payments.fetch(razorpayPaymentId)
       if (
-        razorpaySignature === 'forged_fake_signature' ||
-        razorpayPaymentId === 'invalid_pay_id'
+        gatewayPayment.order_id !== razorpayOrderId ||
+        Number(gatewayPayment.amount) !== paymentRecord.amount ||
+        !gatewayPayment.currency ||
+        gatewayPayment.currency !== paymentRecord.currency
       ) {
-        isValid = false
-      } else if (
-        razorpayPaymentId.startsWith('pay_') ||
-        razorpayPaymentId.startsWith('UPI_') ||
-        razorpaySignature === 'sig_verified_ok'
-      ) {
-        isValid = true
+        return res
+          .status(400)
+          .json({
+            success: false,
+            verified: false,
+            error: "Payment does not match the order.",
+          })
       }
     }
 
@@ -383,57 +432,253 @@ paymentsRouter.post('/webhook', async (req: Request, res: Response) => {
           gateway_payment_id: razorpayPaymentId,
           verified_at: new Date().toISOString(),
         })
-
-        const campusOrderId = paymentEntity?.notes?.campus_order_id
-        if (campusOrderId) {
-          await updateOrderRecord(campusOrderId, {
-            payment_status: 'PAID',
+      }
+      if (gatewayPayment.status === "failed") {
+        const attempts = await razorpay.orders.fetchPayments(razorpayOrderId)
+        const attemptSummary = classifyPaymentAttempts(
+          attempts.items || [],
+          razorpayOrderId,
+          paymentRecord.amount,
+          paymentRecord.currency,
+        )
+        if (attemptSummary.captured) {
+          await processRazorpayPaymentEvent({
+            eventType: "payment.captured",
+            gatewayOrderId: razorpayOrderId,
+            paymentId: attemptSummary.captured.id,
+            amount: Number(attemptSummary.captured.amount),
+            currency: attemptSummary.captured.currency || "",
+          })
+          return res.status(200).json({
+            success: true,
+            verified: true,
+            orderId,
+            paymentId: attemptSummary.captured.id,
+            status: "PAID",
           })
         }
+        const failureIsFinal = attemptSummary.failureIsFinal
+        await processRazorpayPaymentEvent({
+          eventType: "payment.failed",
+          gatewayOrderId: razorpayOrderId,
+          paymentId: razorpayPaymentId,
+          amount: Number(gatewayPayment.amount),
+          currency: gatewayPayment.currency,
+          failureReason: gatewayPayment.error_description || "Payment failed",
+          failureIsFinal,
+        })
+        if (!failureIsFinal) {
+          return res.status(202).json({
+            success: true,
+            verified: false,
+            status: "PENDING",
+            orderId,
+            message: "Another payment attempt may still be processing.",
+          })
+        }
+        return res
+          .status(402)
+          .json({ success: false, verified: false, status: "FAILED", orderId })
       }
-    } else if (eventType === 'payment.failed') {
-      const paymentEntity = event.payload?.payment?.entity
-      const razorpayOrderId = paymentEntity?.order_id
-
-      if (razorpayOrderId) {
-        await updatePaymentRecord(razorpayOrderId, {
-          status: 'FAILED',
-          failure_reason: paymentEntity?.error_description || 'Payment failed',
+      if (gatewayPayment.status !== "captured") {
+        return res.status(202).json({
+          success: true,
+          verified: false,
+          status: "PENDING",
+          orderId,
+          message: "Payment confirmation is still pending.",
         })
       }
+      const status = await processRazorpayPaymentEvent({
+        eventType: "payment.captured",
+        gatewayOrderId: razorpayOrderId,
+        paymentId: razorpayPaymentId,
+        amount: Number(gatewayPayment.amount),
+        currency: gatewayPayment.currency || "",
+      })
+      if (status !== "PAID") {
+        return res
+          .status(202)
+          .json({ success: true, verified: false, status, orderId })
+      }
+      return res.status(200).json({
+        success: true,
+        verified: true,
+        orderId,
+        paymentId: razorpayPaymentId,
+        status: "PAID",
+        orderStatus: order.status,
+        message:
+          "Payment verified successfully. Your order is waiting for kitchen staff.",
+      })
+    } catch (error: unknown) {
+      console.error(
+        "Error verifying payment:",
+        error instanceof Error ? error.message : "Unknown error",
+      )
+      return res
+        .status(500)
+        .json({
+          success: false,
+          verified: false,
+          error: "Unable to verify payment. Please try again.",
+        })
     }
+  },
+)
 
-    return res.status(200).json({ status: 'ok' })
-  } catch (error: any) {
-    console.error('Webhook error:', error)
-    return res.status(500).json({ error: 'Webhook processing error' })
+/**
+ * Verifies Razorpay webhooks against the exact request body and processes them once.
+ * POST /api/payments/webhook
+ */
+
+paymentsRouter.post("/webhook", async (req: Request, res: Response) => {
+  try {
+    const signature = req.headers["x-razorpay-signature"]
+    const eventId = req.headers["x-razorpay-event-id"]
+    if (!isRazorpayTestConfigured() || !razorpay) {
+      return paymentUnavailable(res)
+    }
+    if (
+      typeof signature !== "string" ||
+      typeof eventId !== "string" ||
+      eventId.length === 0 ||
+      eventId.length > 200 ||
+      !req.rawBody
+    ) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Invalid webhook request." })
+    }
+    if (
+      !isValidHexHmac(req.rawBody, signature, config.razorpay.webhookSecret)
+    ) {
+      console.warn("Rejected Razorpay webhook with invalid signature.")
+      return res
+        .status(400)
+        .json({ success: false, error: "Invalid webhook signature." })
+    }
+    const eventType = req.body?.event
+    if (!["payment.captured", "payment.failed"].includes(eventType)) {
+      return res.status(200).json({ status: "ignored" })
+    }
+    const payment = req.body?.payload?.payment?.entity
+    if (
+      typeof payment?.order_id !== "string" ||
+      typeof payment?.id !== "string" ||
+      !Number.isInteger(payment?.amount) ||
+      typeof payment?.currency !== "string"
+    ) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Invalid payment event payload." })
+    }
+    let failureIsFinal = true
+    if (eventType === "payment.failed") {
+      const attempts = await razorpay.orders.fetchPayments(payment.order_id)
+      const attemptSummary = classifyPaymentAttempts(
+        attempts.items || [],
+        payment.order_id,
+        payment.amount,
+        payment.currency,
+      )
+      failureIsFinal = attemptSummary.failureIsFinal
+    }
+    const status = await processRazorpayPaymentEvent({
+      eventId,
+      eventType,
+      gatewayOrderId: payment.order_id,
+      paymentId: payment.id,
+      amount: payment.amount,
+      currency: payment.currency,
+      failureReason: payment.error_description,
+      failureIsFinal,
+    })
+    return res.status(200).json({ status: status.toLowerCase() })
+  } catch (error: unknown) {
+    console.error(
+      "Razorpay webhook processing failed:",
+      error instanceof Error ? error.message : "Unknown error",
+    )
+    return res
+      .status(500)
+      .json({ success: false, error: "Webhook processing failed." })
   }
 })
 
 /**
- * 4. Payment Status Check (Recovery if browser was refreshed)
+ * Returns the payment status only to the authenticated owner of an order.
  * GET /api/payments/status/:orderId
  */
-paymentsRouter.get('/status/:orderId', async (req: Request, res: Response) => {
-  try {
-    const orderId = Array.isArray(req.params.orderId) ? req.params.orderId[0] : (req.params.orderId || '')
-    const order = await getOrderById(orderId)
 
-    if (!order) {
-      return res.status(404).json({ success: false, error: 'Order not found' })
+paymentsRouter.get(
+  "/status/:orderId",
+  requireAuth,
+  async (req: Request, res: Response) => {
+    try {
+      const orderId = Array.isArray(req.params.orderId)
+        ? req.params.orderId[0]
+        : req.params.orderId
+      const order = await getOrderById(orderId)
+      if (!order || order.user_id !== req.user!.id) {
+        return res
+          .status(404)
+          .json({ success: false, error: "Order not found." })
+      }
+      let payment = await getLatestPaymentForOrder(order.id)
+      if (
+        order.payment_status !== "PAID" &&
+        payment?.gateway === "razorpay" &&
+        payment.gateway_order_id &&
+        isRazorpayTestConfigured() &&
+        razorpay
+      ) {
+        const gatewayPayments = await razorpay.orders.fetchPayments(
+          payment.gateway_order_id,
+        )
+        const attemptSummary = classifyPaymentAttempts(
+          gatewayPayments.items || [],
+          payment.gateway_order_id,
+          payment.amount,
+          payment.currency,
+        )
+        const capturedPayment = attemptSummary.captured
+        const settledFailure = attemptSummary.failureIsFinal
+          ? attemptSummary.matching[0]
+          : null
+        const paymentToApply = capturedPayment || settledFailure
+        if (paymentToApply) {
+          await processRazorpayPaymentEvent({
+            eventType: capturedPayment ? "payment.captured" : "payment.failed",
+            gatewayOrderId: payment.gateway_order_id,
+            paymentId: paymentToApply.id,
+            amount: Number(paymentToApply.amount),
+            currency: paymentToApply.currency || "",
+            failureReason: paymentToApply.error_description || undefined,
+          })
+        }
+        payment = await getLatestPaymentForOrder(order.id)
+      }
+      const refreshedOrder = await getOrderById(order.id)
+      return res.status(200).json({
+        success: true,
+        orderId: order.id,
+        orderNumber: order.order_number,
+        paymentMethod: order.payment,
+        paymentStatus: refreshedOrder?.payment_status || order.payment_status,
+        paymentFailureReason: payment?.failure_reason || null,
+        orderStatus: refreshedOrder?.status || order.status,
+        stage: refreshedOrder?.stage ?? order.stage,
+        total: order.total,
+      })
+    } catch (error: unknown) {
+      console.error(
+        "Error checking payment status:",
+        error instanceof Error ? error.message : "Unknown error",
+      )
+      return res
+        .status(500)
+        .json({ success: false, error: "Unable to check payment status." })
     }
-
-    return res.status(200).json({
-      success: true,
-      orderId: order.id,
-      orderNumber: order.order_number,
-      paymentMethod: order.payment,
-      paymentStatus: order.payment_status,
-      orderStatus: order.status,
-      stage: order.stage,
-      total: order.total,
-    })
-  } catch (error: any) {
-    return res.status(500).json({ success: false, error: error.message })
-  }
-})
+  },
+)

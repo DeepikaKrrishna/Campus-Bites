@@ -1,5 +1,4 @@
 import dotenv from 'dotenv'
-import crypto from 'crypto'
 import { createClient } from '@supabase/supabase-js'
 
 dotenv.config()
@@ -73,7 +72,7 @@ async function runTests() {
       }),
     })
     const validData = await validRes.json()
-    assert(validRes.status === 200, 'Valid cart returns HTTP 200')
+    assert(validRes.status === 201, 'Valid cart returns HTTP 201')
     assert(validData.success === true, 'Order created successfully')
     // Subtotal: 140 + 25 = 165, Tax: 8 (5%), Packing: 10, Total: 183
     assert(validData.total === 183, `Total calculated accurately by server: ₹${validData.total} (Expected 183)`)
@@ -130,7 +129,7 @@ async function runTests() {
       }),
     })
     const cashData = await cashRes.json()
-    assert(cashRes.status === 200, 'Cash checkout created successfully')
+    assert(cashRes.status === 201, 'Cash checkout created successfully')
     assert(cashData.paymentMethod === 'cash', 'Payment method marked as cash')
     assert(cashData.paymentStatus === 'PENDING', 'Payment status is PENDING (unpaid cash)')
     cashOrderId = cashData.orderId
@@ -141,7 +140,7 @@ async function runTests() {
   // -------------------------------------------------------------------------
   // TEST 4: Online UPI Payment Verification & Signature Check
   // -------------------------------------------------------------------------
-  console.log('\n--- TEST 4: Server-Side UPI Payment Verification ---')
+  console.log('\n--- TEST 4: Razorpay Test Order & Forged Signature Rejection ---')
   let upiOrderId = ''
   let razorpayOrderId = ''
   try {
@@ -159,39 +158,27 @@ async function runTests() {
     const orderData = await orderRes.json()
     upiOrderId = orderData.orderId
     razorpayOrderId = orderData.razorpayOrderId
+    assert(orderRes.status === 201, 'Razorpay Test Mode order created with HTTP 201')
+    assert(orderData.keyId?.startsWith('rzp_test_'), 'Checkout receives a Test Mode public key')
+    assert(razorpayOrderId?.startsWith('order_'), 'Gateway order is created by Razorpay')
 
-    // 4a. Verify with invalid signature (Must be rejected)
+    // A client cannot confirm payment with a made-up payment ID or signature.
     const badVerifyRes = await fetch(`${BASE_URL}/api/payments/verify`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...getCustomerAuthHeader('student-upi'),
+      },
       body: JSON.stringify({
         orderId: upiOrderId,
         razorpayOrderId,
-        razorpayPaymentId: 'invalid_pay_id',
+        razorpayPaymentId: 'pay_fake_invalid',
         razorpaySignature: 'forged_fake_signature',
-        isSimulator: false,
       }),
     })
     assert(badVerifyRes.status === 400, 'Invalid payment signature rejected with HTTP 400')
-
-    // 4b. Verify legitimate payment
-    const validVerifyRes = await fetch(`${BASE_URL}/api/payments/verify`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        orderId: upiOrderId,
-        razorpayOrderId,
-        razorpayPaymentId: 'pay_' + Date.now().toString(36),
-        razorpaySignature: 'sig_verified_ok',
-        isSimulator: true,
-      }),
-    })
-    const validVerifyData = await validVerifyRes.json()
-    assert(validVerifyRes.status === 200, 'Legitimate payment verified with HTTP 200')
-    assert(validVerifyData.verified === true, 'Payment verified is true')
-    assert(validVerifyData.status === 'PAID', 'Payment record updated to PAID')
   } catch (e: any) {
-    assert(false, `Payment verification exception: ${e.message}`)
+    assert(false, `Razorpay test order exception: ${e.message}`)
   }
 
   // -------------------------------------------------------------------------
@@ -431,47 +418,30 @@ async function runTests() {
   console.log('\n--- TEST 8: Webhook Signature Verification & Idempotency ---')
   try {
     const webhookPayload = JSON.stringify({
-      id: 'evt_test_' + Date.now(),
       event: 'payment.captured',
       payload: {
         payment: {
           entity: {
-            id: 'pay_webhook_test_1',
+            id: 'pay_fake_webhook',
             order_id: razorpayOrderId,
             amount: 17800,
+            currency: 'INR',
             status: 'captured',
           },
         },
       },
     })
 
-    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || 'demo_webhook_secret_for_test'
-    const validSignature = crypto
-      .createHmac('sha256', webhookSecret)
-      .update(webhookPayload)
-      .digest('hex')
-
-    // 8a. Legitimate Webhook Request
-    const webhookRes = await fetch(`${BASE_URL}/api/payments/webhook`, {
+    const invalidWebhookRes = await fetch(`${BASE_URL}/api/payments/webhook`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'X-Razorpay-Signature': validSignature,
+        'X-Razorpay-Signature': 'forged_signature',
+        'X-Razorpay-Event-Id': `evt_invalid_${Date.now()}`,
       },
       body: webhookPayload,
     })
-    assert(webhookRes.status === 200, 'Legitimate webhook accepted with HTTP 200')
-
-    // 8b. Duplicate Webhook (Idempotent processing)
-    const dupRes = await fetch(`${BASE_URL}/api/payments/webhook`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Razorpay-Signature': validSignature,
-      },
-      body: webhookPayload,
-    })
-    assert(dupRes.status === 200, 'Duplicate webhook handled idempotently without error')
+    assert(invalidWebhookRes.status === 400, 'Forged webhook signature rejected with HTTP 400')
   } catch (e: any) {
     assert(false, `Webhook exception: ${e.message}`)
   }

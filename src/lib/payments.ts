@@ -1,4 +1,4 @@
-import { type AppUser, getAuthHeaders } from './auth'
+import { getAuthHeaders } from './auth'
 import type { CartItem } from '../App'
 
 declare global {
@@ -56,7 +56,6 @@ export type CreateOrderResponse = {
   currency: string
   razorpayOrderId?: string
   keyId?: string
-  isSimulator?: boolean
   isCash?: boolean
   etaMinutes?: number
   error?: string
@@ -74,9 +73,49 @@ export type VerifyPaymentResponse = {
   error?: string
 }
 
-/**
- * Loads the official Razorpay Standard Checkout SDK script dynamically
- */
+export type PaymentStatusResponse = {
+  success: boolean
+  orderId: string
+  paymentStatus: 'PENDING' | 'PAID' | 'FAILED' | 'REFUNDED'
+  paymentFailureReason?: string | null
+  error?: string
+}
+
+export type RazorpayCheckoutResponse = {
+  razorpay_payment_id: string
+  razorpay_order_id: string
+  razorpay_signature: string
+}
+
+export type RazorpayCheckoutOptions = {
+  key: string
+  amount: number
+  currency: string
+  name: string
+  description: string
+  order_id: string
+  prefill: { name: string; email: string }
+  theme: { color: string }
+  handler: (response: RazorpayCheckoutResponse) => void | Promise<void>
+  modal: { ondismiss: () => void }
+}
+
+export type RazorpayFailure = {
+  error?: { description?: string; reason?: string }
+}
+
+export interface RazorpayCheckoutInstance {
+  open(): void
+  close(): void
+  on(event: 'payment.failed', handler: (response: RazorpayFailure) => void): void
+}
+
+declare global {
+  interface Window {
+    Razorpay?: new (options: RazorpayCheckoutOptions) => RazorpayCheckoutInstance
+  }
+}
+
 export function loadRazorpayScript(): Promise<boolean> {
   return new Promise((resolve) => {
     if (window.Razorpay) {
@@ -84,49 +123,33 @@ export function loadRazorpayScript(): Promise<boolean> {
       return
     }
 
+    const existing = document.querySelector<HTMLScriptElement>('script[data-razorpay-checkout]')
+    if (existing) {
+      existing.addEventListener('load', () => resolve(Boolean(window.Razorpay)), { once: true })
+      existing.addEventListener('error', () => resolve(false), { once: true })
+      return
+    }
+
     const script = document.createElement('script')
     script.src = 'https://checkout.razorpay.com/v1/checkout.js'
     script.async = true
-    script.onload = () => resolve(true)
-    script.onerror = () => {
-      console.warn('Failed to load Razorpay Checkout script from CDN.')
-      resolve(false)
-    }
+    script.dataset.razorpayCheckout = 'true'
+    script.onload = () => resolve(Boolean(window.Razorpay))
+    script.onerror = () => resolve(false)
     document.body.appendChild(script)
   })
 }
 
-/**
- * Calls the backend to create an authoritative payment order
- */
-export async function createBackendPaymentOrder(
-  user: AppUser,
-  items: CartItem[],
-  paymentMethod: PaymentMethod
-): Promise<CreateOrderResponse> {
-  const payload = {
-    userId: user.id,
-    userEmail: user.email,
-    userName: user.name,
-    items: items.map((it) => ({
-      id: it.id,
-      quantity: it.quantity,
-    })),
-    paymentMethod,
-  }
-
-  const headers = await getAuthHeaders()
-  const response = await fetch('/api/payments/create-order', {
+async function postPaymentRequest<T>(path: string, payload: unknown): Promise<T> {
+  const response = await fetch(path, {
     method: 'POST',
-    headers,
+    headers: await getAuthHeaders(),
     body: JSON.stringify(payload),
   })
-
-  const data = await response.json()
+  const data = (await response.json()) as T & { success?: boolean; error?: string }
   if (!response.ok || !data.success) {
-    throw new Error(data.error || 'Failed to initialize payment order on server.')
+    throw new Error(data.error || 'The payment request could not be completed.')
   }
-
   return data
 }
 
@@ -207,19 +230,17 @@ export async function verifyPaymentOnBackend(params: {
   razorpayOrderId: string
   razorpayPaymentId: string
   razorpaySignature: string
-  isSimulator?: boolean
 }): Promise<VerifyPaymentResponse> {
-  const headers = await getAuthHeaders()
-  const response = await fetch('/api/payments/verify', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(params),
+  return postPaymentRequest<VerifyPaymentResponse>('/api/payments/verify', params)
+}
+
+export async function getPaymentStatus(orderId: string): Promise<PaymentStatusResponse> {
+  const response = await fetch(`/api/payments/status/${encodeURIComponent(orderId)}`, {
+    headers: await getAuthHeaders(),
   })
-
-  const data = await response.json()
-  if (!response.ok || !data.verified) {
-    throw new Error(data.error || 'Payment signature verification failed on backend.')
+  const data = (await response.json()) as PaymentStatusResponse
+  if (!response.ok || !data.success) {
+    throw new Error(data.error || 'Payment status could not be checked.')
   }
-
   return data
 }
