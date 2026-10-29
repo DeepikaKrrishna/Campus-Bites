@@ -68,6 +68,10 @@ export const STATUS_TO_STAGE: Record<OrderStatus, number> = {
 
 const STORAGE_KEY = 'cb_orders_cache'
 
+function isTrackableOrder(order: Order): boolean {
+  return order.payment === 'cash' || order.payment_status === 'PAID'
+}
+
 export function readCachedOrders(): Order[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -180,7 +184,7 @@ export async function fetchOrderById(orderId: string): Promise<Order | null> {
  * Fetch authoritative user orders from Supabase PostgreSQL (or API endpoint)
  */
 export async function getOrders(userId: string): Promise<Order[]> {
-  const cached = readCachedOrders()
+  const cached = readCachedOrders().filter(isTrackableOrder)
   const effectiveUserId = (!userId || userId.startsWith('demo-'))
     ? '6ad74069-27c0-4bcc-8666-e6cce642ef27'
     : userId
@@ -192,13 +196,14 @@ export async function getOrders(userId: string): Promise<Order[]> {
         .from('orders')
         .select('*')
         .eq('user_id', effectiveUserId)
+        .or('payment_status.eq.PAID,payment.eq.cash')
         .order('created_at', { ascending: false })
         .limit(25)
 
       if (!error && data && data.length > 0) {
-        const parsed = data.map(normalizeOrder)
+        const parsed = data.map(normalizeOrder).filter(isTrackableOrder)
         writeCachedOrders(parsed)
-        return parsed
+        if (parsed.length > 0) return parsed
       }
     } catch (err) {
       console.warn('Supabase getOrders direct error, trying API endpoint:', err)
@@ -210,10 +215,10 @@ export async function getOrders(userId: string): Promise<Order[]> {
     const headers = await getAuthHeaders()
     const res = await fetch(`/api/orders/user/${encodeURIComponent(effectiveUserId)}`, { headers })
     const json = await res.json().catch(() => ({}))
-    if (res.ok && json.success && Array.isArray(json.orders) && json.orders.length > 0) {
-      const parsed = json.orders.map(normalizeOrder)
+    if (res.ok && json.success && Array.isArray(json.orders)) {
+      const parsed = json.orders.map(normalizeOrder).filter(isTrackableOrder)
       writeCachedOrders(parsed)
-      return parsed
+      if (parsed.length > 0) return parsed
     }
   } catch (apiErr) {
     console.warn('API getOrders error:', apiErr)

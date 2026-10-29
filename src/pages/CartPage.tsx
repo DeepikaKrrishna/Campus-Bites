@@ -5,6 +5,7 @@ import {
   loadRazorpayScript,
   openRazorpayCheckout,
   verifyPaymentOnBackend,
+  type PaymentMethod,
 } from '../lib/payments'
 import type { AppUser } from '../lib/auth'
 import type { CartItem, Tab } from '../App'
@@ -17,7 +18,8 @@ type Props = {
   onOrderPlaced: (order: Order) => void
 }
 
-const PAYMENT = [
+const PAYMENT: Array<{ key: PaymentMethod; label: string; sub: string; icon: string }> = [
+  { key: 'netbanking', label: 'Netbanking', sub: 'SBI · HDFC (Select Bank)', icon: '🏦' },
   { key: 'upi', label: 'UPI', sub: 'GPay · PhonePe · Paytm', icon: '📱' },
   { key: 'card', label: 'Card', sub: 'Debit or Credit', icon: '💳' },
   { key: 'cash', label: 'Cash', sub: 'Pay at counter', icon: '💵' },
@@ -30,8 +32,9 @@ export default function CartPage({
   onTabChange,
   onOrderPlaced,
 }: Props) {
-  const [payment, setPayment] = useState<'upi' | 'card' | 'cash'>('upi')
+  const [payment, setPayment] = useState<PaymentMethod>('netbanking')
   const [busy, setBusy] = useState(false)
+  const [checkoutError, setCheckoutError] = useState('')
 
   const subtotal = cart.reduce((s, c) => s + c.price * c.quantity, 0)
   const tax = Math.round(subtotal * 0.05)
@@ -39,9 +42,10 @@ export default function CartPage({
   const total = subtotal + tax + packing
 
   // Complete order placement via authoritative backend and Razorpay payment gateway
-  const executeOrder = async (method: 'upi' | 'card' | 'cash') => {
+  const executeOrder = async (method: PaymentMethod) => {
     if (busy || cart.length === 0) return
     setBusy(true)
+    setCheckoutError('')
 
     try {
       const currentUser: AppUser = user ?? {
@@ -58,54 +62,28 @@ export default function CartPage({
 
       // Cash payments are completed immediately
       if (method === 'cash') {
-        let placedOrder = await fetchOrderById(paymentOrderRes.orderId)
-        if (!placedOrder) {
-          placedOrder = {
-            id: paymentOrderRes.orderId,
-            order_number: paymentOrderRes.orderNumber,
-            token_number: paymentOrderRes.tokenNumber,
-            items: cart.map((it) => ({
-              id: it.id,
-              name: it.name,
-              price: it.price,
-              image: it.image,
-              quantity: it.quantity,
-            })),
-            subtotal,
-            tax,
-            packing,
-            total,
-            payment: 'cash',
-            payment_status: 'PENDING',
-            status: 'PLACED',
-            stage: 0,
-            rating: null,
-            eta_minutes: paymentOrderRes.etaMinutes || 15,
-            created_at: new Date().toISOString(),
-          }
-        }
+        const placedOrder = await fetchOrderById(paymentOrderRes.orderId)
+        if (!placedOrder) throw new Error('The saved order could not be loaded. Please check order tracking.')
         addOrderToCache(placedOrder)
         onOrderPlaced(placedOrder)
         onTabChange('track')
         return
       }
 
-      // 2. Online / UPI payment: Open Razorpay Test Mode Checkout Directly
+      // 2. Online / Netbanking / UPI payment: Open Razorpay Test Mode Checkout Directly
       if (!paymentOrderRes.razorpayOrderId) {
         throw new Error('Razorpay did not return an order ID. Please try again.')
+      }
+      if (!paymentOrderRes.keyId?.startsWith('rzp_test_')) {
+        throw new Error('Razorpay Test Mode is not configured on the server.')
       }
 
       if (!(await loadRazorpayScript())) {
         throw new Error('Razorpay Checkout SDK could not be loaded. Please check your internet connection.')
       }
 
-      const razorpayKey =
-        paymentOrderRes.keyId ||
-        (import.meta as any).env?.VITE_RAZORPAY_KEY_ID ||
-        'rzp_test_TsHQqNzjSdRCWH'
-
       const checkoutResponse = await openRazorpayCheckout({
-        key: razorpayKey,
+        key: paymentOrderRes.keyId,
         orderId: paymentOrderRes.razorpayOrderId,
         amount: paymentOrderRes.amount,
         currency: paymentOrderRes.currency || 'INR',
@@ -132,41 +110,19 @@ export default function CartPage({
         throw new Error(verifyRes.error || 'Payment verification failed on server.')
       }
 
-      let placedOrder = await fetchOrderById(paymentOrderRes.orderId)
-      if (!placedOrder && (verifyRes as any).order) {
-        placedOrder = normalizeOrder((verifyRes as any).order)
-      }
-      if (!placedOrder) {
-        placedOrder = {
-          id: paymentOrderRes.orderId,
-          order_number: paymentOrderRes.orderNumber,
-          token_number: paymentOrderRes.tokenNumber,
-          items: cart.map((it) => ({
-            id: it.id,
-            name: it.name,
-            price: it.price,
-            image: it.image,
-            quantity: it.quantity,
-          })),
-          subtotal,
-          tax,
-          packing,
-          total,
-          payment: 'upi',
-          payment_status: 'PAID',
-          status: 'PLACED',
-          stage: 0,
-          rating: null,
-          eta_minutes: paymentOrderRes.etaMinutes || 15,
-          created_at: new Date().toISOString(),
-        }
+      const placedOrder = verifyRes.order
+        ? normalizeOrder(verifyRes.order)
+        : await fetchOrderById(paymentOrderRes.orderId)
+      if (!placedOrder || placedOrder.payment_status !== 'PAID') {
+        throw new Error('Payment was received, but the saved order is not available yet. Please refresh order tracking.')
       }
 
       addOrderToCache(placedOrder)
       onOrderPlaced(placedOrder)
       onTabChange('track')
     } catch (err: any) {
-      alert(err.message || 'Failed to place order. Please try again.')
+      console.error('Order checkout error:', err)
+      setCheckoutError(err.message || 'Failed to place order. Please try again.')
     } finally {
       setBusy(false)
     }
@@ -211,6 +167,46 @@ export default function CartPage({
         >
           + Add More
         </button>
+      </div>
+
+      {/* Razorpay Test Mode Active Indicator */}
+      <div
+        style={{
+          background: 'linear-gradient(135deg, #f0fdf4, #dcfce7)',
+          border: '1px solid #86efac',
+          borderRadius: 14,
+          margin: '12px 20px 4px',
+          padding: '10px 14px',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 10,
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 20 }}>🧪</span>
+          <div>
+            <p style={{ margin: 0, fontSize: 13, fontWeight: 800, color: '#166534' }}>
+              Razorpay Test Mode Active
+            </p>
+            <p style={{ margin: 0, fontSize: 11, color: '#15803d' }}>
+              Test Key: <code style={{ fontWeight: 700 }}>rzp_test_TsHQqNzjSdRCWH</code>
+            </p>
+          </div>
+        </div>
+        <span
+          style={{
+            fontSize: 10.5,
+            fontWeight: 800,
+            background: '#16a34a',
+            color: '#ffffff',
+            padding: '3px 8px',
+            borderRadius: 6,
+            letterSpacing: 0.5,
+          }}
+        >
+          SANDBOX
+        </span>
       </div>
 
       {cart.length === 0 ? (
@@ -384,14 +380,14 @@ export default function CartPage({
               </span>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10 }}>
               {PAYMENT.map((p) => {
                 const isSelected = payment === p.key
                 return (
                   <button
                     key={p.key}
                     onClick={() => {
-                      setPayment(p.key as any)
+                      setPayment(p.key)
                     }}
                     style={{
                       padding: '12px 8px',
@@ -417,24 +413,50 @@ export default function CartPage({
               })}
             </div>
 
+            {/* Netbanking Option Hint */}
+            {payment === 'netbanking' && (
+              <div
+                style={{
+                  marginTop: 12,
+                  padding: '12px 14px',
+                  background: '#f0fdf4',
+                  borderRadius: 12,
+                  border: '1px solid #bbf7d0',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 10,
+                }}
+              >
+                <span style={{ fontSize: 20 }}>🏦</span>
+                <span style={{ fontSize: 12, color: '#166534', lineHeight: 1.45 }}>
+                  <strong>Bank Simulator:</strong> Click Pay to open Razorpay's Bank Selection (SBI, HDFC, ICICI, etc.) and click the simulated <strong>"Success"</strong> button. No QR code needed!
+                </span>
+              </div>
+            )}
+
             {/* UPI Option Hint */}
             {payment === 'upi' && (
               <div
                 style={{
                   marginTop: 12,
-                  padding: '10px 12px',
+                  padding: '12px 14px',
                   background: '#f8fafc',
-                  borderRadius: 10,
+                  borderRadius: 12,
                   border: '1px dashed #cbd5e1',
                   display: 'flex',
-                  alignItems: 'center',
-                  gap: 8,
+                  flexDirection: 'column',
+                  gap: 6,
                 }}
               >
-                <span style={{ fontSize: 16 }}>⚡</span>
-                <span style={{ fontSize: 11.5, color: '#334155' }}>
-                  UPI payments open securely in Razorpay Checkout. Test mode uses a clearly marked payment simulation.
-                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 16 }}>⚡</span>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: '#1e293b' }}>
+                    How to complete test payment in Razorpay:
+                  </span>
+                </div>
+                <p style={{ fontSize: 11.5, color: '#475569', margin: 0, lineHeight: 1.45 }}>
+                  In the Razorpay popup, enter UPI ID: <code style={{ background: '#e2e8f0', padding: '1px 6px', borderRadius: 4, fontWeight: 700, color: '#0f172a' }}>success@razorpay</code>, or switch to <strong>Card / Netbanking</strong> to click the simulated <strong>"Success"</strong> button. <em>Do not scan with a real mobile app on your phone</em>, as test mode transactions are sandboxed.
+                </p>
               </div>
             )}
 
@@ -552,7 +574,9 @@ export default function CartPage({
               ) : (
                 <>
                   <span>
-                    {payment === 'upi'
+                    {payment === 'netbanking'
+                      ? `Pay via Netbanking · ₹${total}`
+                      : payment === 'upi'
                       ? `Pay via UPI · ₹${total}`
                       : payment === 'card'
                       ? `Pay Securely · ₹${total}`
@@ -562,6 +586,28 @@ export default function CartPage({
                 </>
               )}
             </button>
+
+            {checkoutError && (
+              <div
+                style={{
+                  marginTop: 12,
+                  padding: '12px 14px',
+                  background: '#fef2f2',
+                  border: '1px solid #fecaca',
+                  borderRadius: 12,
+                  color: '#b91c1c',
+                  fontSize: 13,
+                  fontWeight: 600,
+                  lineHeight: 1.4,
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                }}
+              >
+                <span>⚠️</span>
+                <span>{checkoutError}</span>
+              </div>
+            )}
           </div>
         </>
       )}

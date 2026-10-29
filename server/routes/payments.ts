@@ -13,14 +13,14 @@ import {
   getPaymentRecord,
 } from '../db'
 import { requireAuth } from '../auth'
+import { isValidHexHmac } from '../payment-utils'
 
 export const paymentsRouter = Router()
 
 let razorpayInstance: Razorpay | null = null
 
 export function getRazorpayInstance(): Razorpay | null {
-  const keyId = config.razorpay.keyId || process.env.RAZORPAY_KEY_ID || process.env.VITE_RAZORPAY_KEY_ID || ''
-  const keySecret = config.razorpay.keySecret || process.env.RAZORPAY_KEY_SECRET || ''
+  const { keyId, keySecret } = config.razorpay
 
   if (!keyId || !keySecret || !isRazorpayConfigured()) {
     return null
@@ -70,29 +70,22 @@ paymentsRouter.post('/create-order', requireAuth, async (req: Request, res: Resp
       return res.status(400).json({ success: false, error: validation.error })
     }
 
-    if (!['upi', 'card', 'cash'].includes(paymentMethod)) {
+    if (!['upi', 'card', 'cash', 'netbanking'].includes(paymentMethod)) {
       return res.status(400).json({ success: false, error: 'Unsupported payment method.' })
     }
 
-    if (paymentMethod === 'card' && !isRazorpayConfigured()) {
+    if (paymentMethod !== 'cash' && !isRazorpayConfigured()) {
       return res.status(503).json({
         success: false,
-        error: 'Card payments are unavailable until Razorpay is configured.',
-      })
-    }
-
-    if (paymentMethod !== 'cash' && !isRazorpayConfigured() && config.nodeEnv === 'production') {
-      return res.status(503).json({
-        success: false,
-        error: 'Online payments are temporarily unavailable. Please choose cash or try again later.',
+        error: 'Online payments require Razorpay Test Mode credentials on the server.',
       })
     }
 
     const rzp = getRazorpayInstance()
-    if (paymentMethod !== 'cash' && isRazorpayConfigured() && !rzp) {
+    if (paymentMethod !== 'cash' && !rzp) {
       return res.status(503).json({
         success: false,
-        error: 'Razorpay could not be initialized. Please check credentials and try again later.',
+        error: 'Razorpay Test Mode could not be initialized. Check the server credentials and try again.',
       })
     }
 
@@ -104,8 +97,84 @@ paymentsRouter.post('/create-order', requireAuth, async (req: Request, res: Resp
     const estimatedReadyAt = new Date(Date.now() + etaMinutes * 60 * 1000).toISOString()
     const effectiveUserId = req.user!.id
 
-    // 2. Persist order in resilient database
-    const savedOrder = await saveOrder({
+    if (paymentMethod === 'cash') {
+      const savedOrder = await saveOrder({
+        user_id: effectiveUserId,
+        order_number: orderNumber,
+        token_number: tokenNumber,
+        items: validatedItems,
+        subtotal,
+        tax,
+        packing,
+        total,
+        currency: 'INR',
+        payment: paymentMethod,
+        payment_status: 'PENDING',
+        status: 'PLACED',
+        stage: 0,
+        eta_minutes: etaMinutes,
+        estimated_ready_at: estimatedReadyAt,
+      })
+
+      await savePaymentRecord({
+        order_id: savedOrder.id,
+        user_id: effectiveUserId,
+        gateway: 'cash',
+        amount: amountInPaise,
+        currency: 'INR',
+        status: 'PENDING',
+        payment_method: 'cash',
+      })
+
+      return res.status(200).json({
+        success: true,
+        orderId: savedOrder.id,
+        orderNumber,
+        tokenNumber,
+        amount: total,
+        amountInPaise,
+        total,
+        currency: 'INR',
+        paymentMethod: 'cash',
+        paymentStatus: 'PENDING',
+        etaMinutes,
+        message: 'Order placed with Cash payment. Please pay at counter upon pickup.',
+      })
+    }
+
+    const razorpay = rzp
+    if (!razorpay) {
+      return res.status(503).json({
+        success: false,
+        error: 'Razorpay Test Mode could not be initialized. Check the server credentials and try again.',
+      })
+    }
+
+    const campusOrderId = crypto.randomUUID()
+    let razorpayOrderId: string
+    try {
+      const gatewayOrder = await razorpay.orders.create({
+        amount: amountInPaise,
+        currency: 'INR',
+        receipt: orderNumber,
+        notes: {
+          campus_order_id: campusOrderId,
+          token_number: String(tokenNumber),
+          customer_user_id: effectiveUserId,
+          payment_method: paymentMethod,
+        },
+      })
+      razorpayOrderId = gatewayOrder.id
+    } catch (rzpErr: unknown) {
+      console.error('Razorpay order creation failed:', rzpErr instanceof Error ? rzpErr.message : 'Unknown gateway error')
+      return res.status(502).json({
+        success: false,
+        error: 'Unable to start Razorpay Test Mode checkout. Check the Test Mode API keys and try again.',
+      })
+    }
+
+    await saveOrder({
+      id: campusOrderId,
       user_id: effectiveUserId,
       order_number: orderNumber,
       token_number: tokenNumber,
@@ -123,68 +192,6 @@ paymentsRouter.post('/create-order', requireAuth, async (req: Request, res: Resp
       estimated_ready_at: estimatedReadyAt,
     })
 
-    const campusOrderId = savedOrder.id
-
-    // 3. Handle Cash Option
-    if (paymentMethod === 'cash') {
-      await savePaymentRecord({
-        order_id: campusOrderId,
-        user_id: effectiveUserId,
-        gateway: 'cash',
-        amount: amountInPaise,
-        currency: 'INR',
-        status: 'PENDING',
-        payment_method: 'cash',
-      })
-
-      return res.status(200).json({
-        success: true,
-        orderId: campusOrderId,
-        orderNumber,
-        tokenNumber,
-        amount: total,
-        amountInPaise,
-        total,
-        currency: 'INR',
-        paymentMethod: 'cash',
-        paymentStatus: 'PENDING',
-        etaMinutes,
-        message: 'Order placed with Cash payment. Please pay at counter upon pickup.',
-      })
-    }
-
-    // 4. Handle Online / UPI Payment with Razorpay
-    let razorpayOrderId = ''
-    let isSimulator = false
-
-    if (isRazorpayConfigured() && rzp) {
-      try {
-        const rzpOrder = await rzp.orders.create({
-          amount: amountInPaise,
-          currency: 'INR',
-          receipt: orderNumber,
-          notes: {
-            campus_order_id: campusOrderId,
-            token_number: String(tokenNumber),
-            customer_user_id: effectiveUserId,
-            payment_method: paymentMethod,
-          },
-        })
-        razorpayOrderId = rzpOrder.id
-      } catch (rzpErr: any) {
-        console.error('Razorpay order creation failed:', rzpErr instanceof Error ? rzpErr.message : rzpErr)
-        return res.status(502).json({
-          success: false,
-          error: `Unable to start Razorpay checkout: ${rzpErr instanceof Error ? rzpErr.message : 'Gateway error'}`,
-        })
-      }
-    } else {
-      // Simulated payments are available only in non-production without gateway credentials.
-      razorpayOrderId = 'order_test_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6)
-      isSimulator = true
-    }
-
-    // Persist Payment record
     await savePaymentRecord({
       order_id: campusOrderId,
       user_id: effectiveUserId,
@@ -196,8 +203,6 @@ paymentsRouter.post('/create-order', requireAuth, async (req: Request, res: Resp
       payment_method: paymentMethod,
     })
 
-    const keyId = config.razorpay.keyId || process.env.RAZORPAY_KEY_ID || process.env.VITE_RAZORPAY_KEY_ID || ''
-
     return res.status(200).json({
       success: true,
       orderId: campusOrderId,
@@ -207,8 +212,7 @@ paymentsRouter.post('/create-order', requireAuth, async (req: Request, res: Resp
       amount: amountInPaise,
       total,
       currency: 'INR',
-      keyId,
-      isSimulator,
+      keyId: config.razorpay.keyId,
       etaMinutes,
     })
   } catch (error: unknown) {
@@ -245,49 +249,20 @@ paymentsRouter.post('/verify', requireAuth, async (req: Request, res: Response) 
     if (
       !paymentRecord ||
       paymentRecord.order_id !== orderId ||
-      paymentRecord.user_id !== req.user!.id
+      paymentRecord.user_id !== req.user!.id ||
+      paymentRecord.gateway !== 'razorpay'
     ) {
       return res.status(404).json({ success: false, verified: false, error: 'Payment order not found.' })
     }
 
-    let isValid = false
-
-    const trustedSimulator =
-      !isRazorpayConfigured() &&
-      process.env.NODE_ENV !== 'production' &&
-      paymentRecord.gateway_order_id?.startsWith('order_test_')
-
-    if (!trustedSimulator) {
-      // Official Razorpay HMAC-SHA256 verification
-      const body = razorpayOrderId + '|' + razorpayPaymentId
-      const expectedSignature = crypto
-        .createHmac('sha256', config.razorpay.keySecret)
-        .update(body.toString())
-        .digest('hex')
-
-      if (razorpaySignature && expectedSignature.length === razorpaySignature.length) {
-        isValid = crypto.timingSafeEqual(
-          Buffer.from(expectedSignature),
-          Buffer.from(razorpaySignature)
-        )
-      }
-    } else {
-      // Validated test mode simulation
-      if (
-        razorpaySignature === 'forged_fake_signature' ||
-        razorpayPaymentId === 'invalid_pay_id'
-      ) {
-        isValid = false
-      } else if (
-        razorpayPaymentId.startsWith('pay_') ||
-        razorpayPaymentId.startsWith('UPI_') ||
-        razorpaySignature === 'sig_verified_ok'
-      ) {
-        isValid = true
-      }
-    }
-
-    if (!isValid) {
+    if (
+      !razorpaySignature ||
+      !isValidHexHmac(
+        `${razorpayOrderId}|${razorpayPaymentId}`,
+        razorpaySignature,
+        config.razorpay.keySecret
+      )
+    ) {
       await updatePaymentRecord(razorpayOrderId, {
         status: 'FAILED',
         failure_reason: 'Signature verification failed',
@@ -297,6 +272,30 @@ paymentsRouter.post('/verify', requireAuth, async (req: Request, res: Response) 
         success: false,
         verified: false,
         error: 'Payment verification failed: Signature mismatch. Order not marked as paid.',
+      })
+    }
+
+    const razorpay = getRazorpayInstance()
+    if (!razorpay) {
+      return res.status(503).json({
+        success: false,
+        verified: false,
+        error: 'Razorpay Test Mode is unavailable. Payment could not be confirmed.',
+      })
+    }
+
+    const gatewayPayment = await razorpay.payments.fetch(razorpayPaymentId)
+    if (
+      gatewayPayment.order_id !== razorpayOrderId ||
+      Number(gatewayPayment.amount) !== Number(paymentRecord.amount) ||
+      gatewayPayment.currency !== paymentRecord.currency ||
+      gatewayPayment.status !== 'captured' ||
+      !gatewayPayment.captured
+    ) {
+      return res.status(400).json({
+        success: false,
+        verified: false,
+        error: 'Razorpay has not confirmed a captured payment for this order.',
       })
     }
 
@@ -343,23 +342,18 @@ const processedWebhooks = new Set<string>()
 paymentsRouter.post('/webhook', async (req: Request, res: Response) => {
   try {
     const signature = req.headers['x-razorpay-signature'] as string
-    const rawBody = (req as any).rawBody || JSON.stringify(req.body)
+    const rawBody = (req as any).rawBody
 
-    // Verify webhook signature
-    if (config.razorpay.webhookSecret && !config.razorpay.webhookSecret.includes('demo')) {
-      const expectedSignature = crypto
-        .createHmac('sha256', config.razorpay.webhookSecret)
-        .update(rawBody)
-        .digest('hex')
-
-      if (
-        !signature ||
-        expectedSignature.length !== signature.length ||
-        !crypto.timingSafeEqual(Buffer.from(expectedSignature), Buffer.from(signature))
-      ) {
-        console.warn('Unauthorized webhook invocation: Invalid signature')
-        return res.status(400).json({ error: 'Invalid webhook signature' })
-      }
+    if (
+      !config.razorpay.webhookSecret ||
+      config.razorpay.webhookSecret.toLowerCase().includes('your_') ||
+      config.razorpay.webhookSecret.toLowerCase().includes('placeholder')
+    ) {
+      return res.status(503).json({ error: 'Razorpay webhook secret is not configured.' })
+    }
+    if (!rawBody || !isValidHexHmac(rawBody, signature || '', config.razorpay.webhookSecret)) {
+      console.warn('Unauthorized webhook invocation: Invalid signature')
+      return res.status(400).json({ error: 'Invalid webhook signature' })
     }
 
     const event = req.body
@@ -370,40 +364,47 @@ paymentsRouter.post('/webhook', async (req: Request, res: Response) => {
     if (processedWebhooks.has(eventId)) {
       return res.status(200).json({ status: 'ok', deduplicated: true })
     }
-    processedWebhooks.add(eventId)
 
-    // Process event
-    if (eventType === 'payment.captured' || eventType === 'order.paid') {
+    if (eventType === 'payment.captured' || eventType === 'payment.failed') {
       const paymentEntity = event.payload?.payment?.entity
       const razorpayOrderId = paymentEntity?.order_id
       const razorpayPaymentId = paymentEntity?.id
 
-      if (razorpayOrderId) {
+      if (!razorpayOrderId || !razorpayPaymentId) {
+        return res.status(400).json({ error: 'Razorpay payment event is incomplete.' })
+      }
+
+      const paymentRecord = await getPaymentRecord(razorpayOrderId)
+      if (
+        !paymentRecord ||
+        paymentRecord.gateway !== 'razorpay' ||
+        Number(paymentRecord.amount) !== Number(paymentEntity.amount) ||
+        paymentRecord.currency !== paymentEntity.currency
+      ) {
+        return res.status(400).json({ error: 'Razorpay payment does not match a saved order.' })
+      }
+
+      if (eventType === 'payment.captured') {
+        if (paymentEntity.status !== 'captured' || !paymentEntity.captured) {
+          return res.status(400).json({ error: 'Razorpay payment is not captured.' })
+        }
         await updatePaymentRecord(razorpayOrderId, {
           status: 'PAID',
           gateway_payment_id: razorpayPaymentId,
           verified_at: new Date().toISOString(),
         })
-
-        const campusOrderId = paymentEntity?.notes?.campus_order_id
-        if (campusOrderId) {
-          await updateOrderRecord(campusOrderId, {
-            payment_status: 'PAID',
-          })
-        }
-      }
-    } else if (eventType === 'payment.failed') {
-      const paymentEntity = event.payload?.payment?.entity
-      const razorpayOrderId = paymentEntity?.order_id
-
-      if (razorpayOrderId) {
+        await updateOrderRecord(paymentRecord.order_id, { payment_status: 'PAID' })
+      } else if (paymentRecord.status !== 'PAID') {
         await updatePaymentRecord(razorpayOrderId, {
           status: 'FAILED',
-          failure_reason: paymentEntity?.error_description || 'Payment failed',
+          gateway_payment_id: razorpayPaymentId,
+          failure_reason: paymentEntity.error_description || 'Payment failed',
         })
+        await updateOrderRecord(paymentRecord.order_id, { payment_status: 'FAILED' })
       }
     }
 
+    processedWebhooks.add(eventId)
     return res.status(200).json({ status: 'ok' })
   } catch (error: any) {
     console.error('Webhook error:', error)

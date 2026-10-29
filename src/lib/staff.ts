@@ -4,6 +4,10 @@ import { type AppUser, getAuthHeaders, getStoredUser } from './auth'
 
 const STAFF_PASSKEY_KEY = 'cb_staff_passkey'
 
+export function isKitchenOrder(order: Pick<Order, 'payment' | 'payment_status'>): boolean {
+  return order.payment === 'cash' || order.payment_status === 'PAID'
+}
+
 export function getStoredStaffPasskey(): string | null {
   return localStorage.getItem(STAFF_PASSKEY_KEY)
 }
@@ -97,6 +101,7 @@ export async function fetchStaffOrders(status?: string): Promise<Order[]> {
       const { data, error } = await supabase
         .from('orders')
         .select('*')
+        .or('payment_status.eq.PAID,payment.eq.cash')
         .order('created_at', { ascending: false })
         .limit(40)
       if (error) throw error

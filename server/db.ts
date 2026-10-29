@@ -367,6 +367,7 @@ export async function getUserOrdersList(userId: string): Promise<any[]> {
     .from('orders')
     .select('*')
     .eq('user_id', userId)
+    .or('payment_status.eq.PAID,payment.eq.cash')
     .order('created_at', { ascending: false })
     .limit(30)
   if (error) throw new Error('Orders could not be loaded from the database.')
@@ -374,7 +375,11 @@ export async function getUserOrdersList(userId: string): Promise<any[]> {
 }
 
 export async function getStaffOrdersList(statusFilter?: string, limit: number = 50): Promise<any[]> {
-  let query = supabase.from('orders').select('*').order('created_at', { ascending: false })
+  let query = supabase
+    .from('orders')
+    .select('*')
+    .or('payment_status.eq.PAID,payment.eq.cash')
+    .order('created_at', { ascending: false })
   if (statusFilter && statusFilter !== 'ALL') query = query.eq('status', statusFilter)
   const { data, error } = await query.limit(Math.min(Math.max(limit, 1), 200))
   if (error) throw new Error('Staff orders could not be loaded from the database.')
@@ -465,4 +470,3 @@ export async function getPaymentRecord(gatewayOrderId: string): Promise<any | nu
   if (error) throw new Error('Payment record could not be loaded.')
   return data
 }
-

@@ -3,7 +3,6 @@ import cors from 'cors'
 import {
   config,
   isRazorpayConfigured,
-  isRazorpayLiveConfigured,
 } from './config'
 import { paymentsRouter } from './routes/payments'
 import { ordersRouter } from './routes/orders'
@@ -63,8 +62,7 @@ app.get(['/api/health', '/health'], async (_req: Request, res: Response) => {
     },
     paymentGateway: {
       provider: 'Razorpay Standard Checkout',
-      mode: isRazorpayLiveConfigured() ? 'Live Production Mode' : 'Verified Test Mode (UPI & Sandbox)',
-      keyId: config.razorpay.keyId,
+      mode: isRazorpayConfigured() ? 'Test Mode configured' : 'Not configured',
     },
   })
 })
@@ -73,13 +71,8 @@ app.get(['/api/health', '/health'], async (_req: Request, res: Response) => {
 if (process.env.NODE_ENV !== 'test' && !process.env.VERCEL) {
   app.listen(config.port, () => {
     console.log(`[CampusBites API] Server running on http://localhost:${config.port}`)
-    const paymentMode = isRazorpayLiveConfigured()
-  ? 'LIVE'
-  : isRazorpayConfigured()
-    ? 'RAZORPAY TEST MODE'
-    : 'TEST / SIMULATOR'
-
-console.log(`[CampusBites API] Payment Mode: ${paymentMode}`)
+    const paymentMode = isRazorpayConfigured() ? 'RAZORPAY TEST MODE' : 'NOT CONFIGURED'
+    console.log(`[CampusBites API] Payment Mode: ${paymentMode}`)
     console.log(`[CampusBites API] Supabase connected to: ${config.supabase.url}`)
   })
 }

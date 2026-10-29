@@ -7,6 +7,7 @@ import {
   collectCashPayment,
   subscribeToAllOrders,
   verifyStaffRole,
+  isKitchenOrder,
 } from '../lib/staff'
 
 type Props = {
@@ -108,12 +109,18 @@ export default function StaffDashboard({ onBackToCustomer }: Props) {
 
     const unsub = subscribeToAllOrders(
       (updatedOrder) => {
-        setOrders((prev) =>
-          prev.map((o) => (o.id === updatedOrder.id ? updatedOrder : o))
-        )
+        setOrders((prev) => {
+          if (!isKitchenOrder(updatedOrder)) {
+            return prev.filter((o) => o.id !== updatedOrder.id)
+          }
+          return prev.some((o) => o.id === updatedOrder.id)
+            ? prev.map((o) => (o.id === updatedOrder.id ? updatedOrder : o))
+            : [updatedOrder, ...prev]
+        })
         fetchStaffStats().then(setStats)
       },
       (newOrder) => {
+        if (!isKitchenOrder(newOrder)) return
         setOrders((prev) => [newOrder, ...prev])
         setNewOrderAlert(`New Order #${newOrder.order_number} Received!`)
         playChime()

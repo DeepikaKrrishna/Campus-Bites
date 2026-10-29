@@ -3,8 +3,9 @@
 Online checkout uses Razorpay Standard Checkout with server-created orders. The
 server only accepts a `rzp_test_` Key ID, verifies the checkout signature, and
 confirms the payment amount, currency, and captured status with Razorpay before
-marking the CampusBites order paid. No live-payment fallback or simulated
-success path is available.
+marking the CampusBites order paid. Online orders are hidden from the kitchen
+and tracking views until payment is confirmed. No live-payment fallback or
+simulated success path is available.
 
 ## Configure a development environment
 

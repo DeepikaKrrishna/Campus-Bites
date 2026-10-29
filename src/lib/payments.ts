@@ -1,5 +1,6 @@
 import { type AppUser, getAuthHeaders } from './auth'
 import type { CartItem } from '../App'
+import type { Order } from './orders'
 
 declare global {
   interface Window {
@@ -7,7 +8,7 @@ declare global {
   }
 }
 
-export type PaymentMethod = 'upi' | 'card' | 'cash'
+export type PaymentMethod = 'netbanking' | 'upi' | 'card' | 'cash'
 
 export type RazorpayCheckoutResponse = {
   razorpay_order_id: string
@@ -27,6 +28,7 @@ type RazorpayCheckoutOptions = {
     email?: string
     contact?: string
     method?: string
+    vpa?: string
   }
   theme?: {
     color?: string
@@ -37,13 +39,18 @@ type RazorpayCheckoutOptions = {
     escape?: boolean
     backdropclose?: boolean
   }
-  config?: any
-  [key: string]: any
 }
 
 type RazorpayCheckoutInstance = {
   open: () => void
-  on?: (event: string, callback: (response: any) => void) => void
+  on?: (event: 'payment.failed', callback: (response: RazorpayPaymentFailure) => void) => void
+}
+
+type RazorpayPaymentFailure = {
+  error?: {
+    description?: string
+    reason?: string
+  }
 }
 
 export type CreateOrderResponse = {
@@ -56,7 +63,6 @@ export type CreateOrderResponse = {
   currency: string
   razorpayOrderId?: string
   keyId?: string
-  isSimulator?: boolean
   isCash?: boolean
   etaMinutes?: number
   error?: string
@@ -72,46 +78,64 @@ export type VerifyPaymentResponse = {
   status?: string
   message?: string
   error?: string
+  order?: Order
 }
+
+let razorpayScriptPromise: Promise<boolean> | null = null
 
 /**
  * Loads the official Razorpay Standard Checkout SDK script dynamically
  */
 export function loadRazorpayScript(): Promise<boolean> {
-  return new Promise((resolve) => {
-    if (window.Razorpay) {
-      resolve(true)
-      return
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    return Promise.resolve(false)
+  }
+  if (window.Razorpay) return Promise.resolve(true)
+  if (razorpayScriptPromise) return razorpayScriptPromise
+
+  razorpayScriptPromise = new Promise((resolve) => {
+    let settled = false
+    let pollInterval: number | null = null
+
+    const finish = (available: boolean) => {
+      if (settled) return
+      settled = true
+      if (pollInterval) window.clearInterval(pollInterval)
+      window.clearTimeout(timer)
+      if (!available) {
+        razorpayScriptPromise = null
+      }
+      resolve(available)
     }
 
-    // Remove any previously-failed script tags so a fresh retry can succeed
-    const existing = document.querySelector<HTMLScriptElement>(
-      'script[src*="checkout.razorpay.com"]'
-    )
-    if (existing) existing.remove()
+    // Fast polling in case script is already loaded or loads without event
+    pollInterval = window.setInterval(() => {
+      if (window.Razorpay) {
+        finish(true)
+      }
+    }, 100)
 
-    const script = document.createElement('script')
-    script.src = 'https://checkout.razorpay.com/v1/checkout.js'
-    script.async = true
+    const timer = window.setTimeout(() => {
+      finish(Boolean(window.Razorpay))
+    }, 10_000)
 
-    // Timeout after 15 seconds so the UI doesn't hang forever
-    const timer = setTimeout(() => {
-      script.onload = script.onerror = null
-      console.warn('Razorpay Checkout script timed out after 15 s.')
-      resolve(false)
-    }, 15_000)
-
-    script.onload = () => {
-      clearTimeout(timer)
-      resolve(true)
+    let script = document.querySelector<HTMLScriptElement>('script[src*="checkout.razorpay.com"]')
+    if (!script) {
+      script = document.createElement('script')
+      script.src = 'https://checkout.razorpay.com/v1/checkout.js'
+      script.async = true
+      document.body.appendChild(script)
     }
-    script.onerror = () => {
-      clearTimeout(timer)
-      console.warn('Failed to load Razorpay Checkout script from CDN.')
-      resolve(false)
-    }
-    document.body.appendChild(script)
+
+    script.addEventListener('load', () => {
+      window.setTimeout(() => finish(Boolean(window.Razorpay)), 50)
+    }, { once: true })
+    script.addEventListener('error', () => {
+      finish(false)
+    }, { once: true })
   })
+
+  return razorpayScriptPromise
 }
 
 /**
@@ -132,7 +156,6 @@ export async function createBackendPaymentOrder(
     })),
     paymentMethod,
   }
-
   const headers = await getAuthHeaders()
   const response = await fetch('/api/payments/create-order', {
     method: 'POST',
@@ -158,8 +181,8 @@ export function openRazorpayCheckout(options: {
   user: AppUser
   method?: PaymentMethod
 }): Promise<RazorpayCheckoutResponse | null> {
-  if (!window.Razorpay) {
-    return Promise.reject(new Error('Razorpay Checkout did not load. Please check your connection and try again.'))
+  if (typeof window === 'undefined' || !window.Razorpay) {
+    return Promise.reject(new Error('Razorpay Checkout SDK is not loaded. Please disable any ad-blockers and try again.'))
   }
 
   return new Promise((resolve, reject) => {
@@ -177,22 +200,39 @@ export function openRazorpayCheckout(options: {
 
     try {
       const cleanPhone = (options.user.phone || '9876543210').replace(/\D/g, '').slice(-10) || '9876543210'
+      const isTestMode = options.key.startsWith('rzp_test_')
 
-      const rzpOptions: any = {
+      const rzpOptions: RazorpayCheckoutOptions = {
         key: options.key,
         order_id: options.orderId,
         amount: options.amount,
         currency: options.currency || 'INR',
-        name: options.name || 'CampusBites',
+        name: 'CampusBites',
         description: options.description || 'Campus Canteen Order',
         prefill: {
           name: options.user.name || 'Student',
           email: options.user.email || 'student@campusbites.edu',
           contact: cleanPhone,
-          method: options.method === 'upi' ? 'upi' : options.method === 'card' ? 'card' : undefined,
+          ...(options.method === 'netbanking'
+            ? { method: 'netbanking' }
+            : options.method === 'card'
+            ? { method: 'card' }
+            : options.method === 'upi'
+            ? { method: 'upi', ...(isTestMode ? { vpa: 'success@razorpay' } : {}) }
+            : {}),
         },
         theme: { color: '#16a34a' },
-        handler: (response: RazorpayCheckoutResponse) => finish(response),
+        handler: (response: RazorpayCheckoutResponse) => {
+          if (
+            !response.razorpay_order_id ||
+            !response.razorpay_payment_id ||
+            !response.razorpay_signature
+          ) {
+            fail(new Error('Razorpay returned an incomplete payment response.'))
+            return
+          }
+          finish(response)
+        },
         modal: {
           ondismiss: () => finish(null),
           escape: true,
@@ -200,12 +240,16 @@ export function openRazorpayCheckout(options: {
         },
       }
 
-      const checkout = new window.Razorpay!(rzpOptions)
+      const Razorpay = window.Razorpay
+      if (!Razorpay) {
+        throw new Error('Razorpay Checkout SDK is not loaded.')
+      }
+
+      const checkout = new Razorpay(rzpOptions)
 
       if (typeof checkout.on === 'function') {
-        checkout.on('payment.failed', function (resp: any) {
+        checkout.on('payment.failed', (resp) => {
           const reason = resp?.error?.description || resp?.error?.reason || 'Payment was declined or cancelled.'
-          console.warn('Razorpay payment failed:', resp)
           fail(new Error(reason))
         })
       }
@@ -225,7 +269,6 @@ export async function verifyPaymentOnBackend(params: {
   razorpayOrderId: string
   razorpayPaymentId: string
   razorpaySignature: string
-  isSimulator?: boolean
 }): Promise<VerifyPaymentResponse> {
   const headers = await getAuthHeaders()
   const response = await fetch('/api/payments/verify', {
